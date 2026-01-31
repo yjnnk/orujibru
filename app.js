@@ -20,7 +20,6 @@ const progressInfo = document.getElementById("progressInfo");
 const errorInfo = document.getElementById("errorInfo");
 const currentText = document.getElementById("currentText");
 const chapterText = document.getElementById("chapterText");
-const nextText = document.getElementById("nextText");
 const tocToggle = document.getElementById("tocToggle");
 const fullBookToggle = document.getElementById("fullBookToggle");
 const textPanel = document.querySelector(".text-panel");
@@ -56,7 +55,8 @@ let lastRenderedSegmentIndex = -1;
 let spineItemsCache = [];
 
 const MAX_SEGMENT_LENGTH = 1000;
-const DEFAULT_LANG = "pt-br";
+const DEFAULT_LANG = "en-us";
+const DEFAULT_VOICE = "am_adam";
 const PREFETCH_AHEAD = 4;
 const MAX_PREFETCH_INFLIGHT = 2;
 const LOAD_TIMEOUT_MS = 60000;
@@ -117,7 +117,7 @@ function saveState() {
     pitch: Number(pitchRange.value),
     modelPath: modelPathInput.value.trim(),
     voicesPath: voicesPathInput.value.trim(),
-    voice: selectedVoice,
+    voice: selectedVoice || DEFAULT_VOICE,
     lang: langSelect.value || DEFAULT_LANG,
   };
   localStorage.setItem(`audibook_state_${currentBookId}`, JSON.stringify(state));
@@ -363,7 +363,7 @@ function getTtsConfig() {
   return {
     modelPath: modelPathInput.value.trim(),
     voicesPath: voicesPathInput.value.trim(),
-    voice: selectedVoice,
+    voice: selectedVoice || DEFAULT_VOICE,
     lang: langSelect.value || DEFAULT_LANG,
   };
 }
@@ -390,6 +390,8 @@ function applyDefaultConfig(config, force = false) {
   }
   if (config.voice && (force || !selectedVoice)) {
     selectedVoice = String(config.voice);
+  } else if (force && !selectedVoice) {
+    selectedVoice = DEFAULT_VOICE;
   }
 }
 
@@ -443,7 +445,11 @@ async function loadVoices() {
     });
 
     if (!selectedVoice || !voices.includes(selectedVoice)) {
-      selectedVoice = data.defaultVoice && voices.includes(data.defaultVoice) ? data.defaultVoice : voices[0];
+      if (voices.includes(DEFAULT_VOICE)) {
+        selectedVoice = DEFAULT_VOICE;
+      } else {
+        selectedVoice = data.defaultVoice && voices.includes(data.defaultVoice) ? data.defaultVoice : voices[0];
+      }
     }
     voiceSelect.value = selectedVoice;
   } catch (error) {
@@ -675,20 +681,14 @@ function pause() {
 function updateCurrentText() {
   if (!segments.length || segmentIndex >= segments.length) {
     currentText.textContent = "—";
-    if (nextText) nextText.textContent = "—";
     return;
   }
   currentText.textContent = segments[segmentIndex];
-  if (nextText) {
-    const next = segments[segmentIndex + 1];
-    nextText.textContent = next ? next : "—";
-  }
 }
 
 function updateReadText() {
   if (!segments.length || segmentIndex >= segments.length) {
     chapterText.textContent = "";
-    if (nextText) nextText.textContent = "—";
     return;
   }
   if (isFullBookView) return;
@@ -717,10 +717,6 @@ function updateReadText() {
       currentNode.scrollIntoView({ block: "center" });
     }
     lastRenderedSegmentIndex = segmentIndex;
-  }
-  if (nextText) {
-    const next = segments[segmentIndex + 1];
-    nextText.textContent = next ? next : "—";
   }
 }
 
