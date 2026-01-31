@@ -186,6 +186,13 @@ input[type="text"] {
   gap: 14px;
 }
 
+.text-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .text-panel h2 {
   margin: 0;
   font-size: 20px;
@@ -239,6 +246,29 @@ input[type="text"] {
   background: #fff4e3;
   border-radius: 6px;
   padding: 2px 4px;
+}
+
+.segment {
+  margin: 0 0 10px;
+  cursor: pointer;
+}
+
+.segment:last-child {
+  margin-bottom: 0;
+}
+
+.unread-text {
+  color: #8f8375;
+}
+
+.book-section-title {
+  margin: 18px 0 8px;
+  font-size: 18px;
+  color: #3d352c;
+}
+
+.book-paragraph {
+  margin: 0 0 10px;
 }
 
 @media (max-width: 680px) {

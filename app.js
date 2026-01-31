@@ -22,6 +22,7 @@ const currentText = document.getElementById("currentText");
 const chapterText = document.getElementById("chapterText");
 const nextText = document.getElementById("nextText");
 const tocToggle = document.getElementById("tocToggle");
+const fullBookToggle = document.getElementById("fullBookToggle");
 let lastTextLength = 0;
 
 let book = null;
@@ -44,9 +45,14 @@ let lastServerState = null;
 let saveStateTimer = null;
 let audioCache = new Map();
 let prefetchInFlight = new Map();
+let isFullBookView = false;
+let fullBookHtml = "";
+let fullBookLoading = false;
+let tocLabelMap = new Map();
 
 const MAX_SEGMENT_LENGTH = 1000;
 const DEFAULT_LANG = "pt-br";
+const PREFETCH_AHEAD = 2;
 
 const audioPlayer = new Audio();
 
@@ -98,6 +104,7 @@ function saveState() {
     bookTitle: book?.title || "EPUB",
     chapterIndex: currentChapterIndex,
     segmentIndex,
+    lastReadIndex: Math.max(0, segmentIndex - 1),
     rate: Number(rateRange.value),
     pause: Number(pauseRange.value),
     pitch: Number(pitchRange.value),
@@ -144,6 +151,7 @@ function queueServerStateSave(state) {
         bookTitle: state.bookTitle,
         chapterIndex: state.chapterIndex,
         segmentIndex: state.segmentIndex,
+        lastReadIndex: state.lastReadIndex,
         updatedAt: Date.now(),
       }),
     }).catch(() => {});
@@ -169,6 +177,15 @@ function getTtsConfig() {
     voice: selectedVoice,
     lang: langInput.value.trim() || DEFAULT_LANG,
   };
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function applyDefaultConfig(config, force = false) {
@@ -284,6 +301,16 @@ async function fetchTtsAudio(text) {
   currentAbortController = controller;
   const cached = audioCache.get(segmentIndex);
   if (cached) return cached;
+  const inflight = prefetchInFlight.get(segmentIndex);
+  if (inflight?.request) {
+    try {
+      await inflight.request;
+      const cachedAfter = audioCache.get(segmentIndex);
+      if (cachedAfter) return cachedAfter;
+    } catch (error) {
+      prefetchInFlight.delete(segmentIndex);
+    }
+  }
   const response = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -311,7 +338,7 @@ async function fetchTtsAudio(text) {
 function pruneAudioCache(centerIndex) {
   const keys = Array.from(audioCache.keys());
   keys.forEach((key) => {
-    if (Math.abs(key - centerIndex) > 2) {
+    if (Math.abs(key - centerIndex) > PREFETCH_AHEAD) {
       audioCache.delete(key);
     }
   });
@@ -353,6 +380,12 @@ function prefetchSegment(index) {
   prefetchInFlight.set(index, { controller, request });
 }
 
+function prefetchNextSegments(startIndex) {
+  for (let i = 1; i <= PREFETCH_AHEAD; i += 1) {
+    prefetchSegment(startIndex + i);
+  }
+}
+
 function cancelPrefetch() {
   prefetchInFlight.forEach((value) => {
     if (value?.controller) value.controller.abort();
@@ -391,13 +424,14 @@ async function speakCurrentSegment() {
   currentAudioUrl = URL.createObjectURL(audioBlob);
   audioPlayer.src = currentAudioUrl;
   audioPlayer.playbackRate = Number(rateRange.value);
-  prefetchSegment(segmentIndex + 1);
+  prefetchNextSegments(segmentIndex);
   audioPlayer.onended = () => {
     segmentIndex += 1;
     saveState();
     updateStatus();
     updateCurrentText();
     updateReadText();
+    prefetchNextSegments(segmentIndex);
     if (isPlaying && !isPaused) {
       const pauseMs = Number(pauseRange.value) || 0;
       if (pauseMs > 0) {
@@ -467,13 +501,24 @@ function updateReadText() {
     if (nextText) nextText.textContent = "—";
     return;
   }
-  const pastSegments = segments.slice(0, segmentIndex);
-  const current = segments[segmentIndex];
-  const pastText = pastSegments.join("\n\n");
-  const currentHtml = `<span class="reading-now">${current}</span>`;
-  const pastHtml = pastText ? `<span class="read-text">${pastText}</span>\n\n` : "";
-  chapterText.innerHTML = `${pastHtml}${currentHtml}`;
-  chapterText.scrollTop = chapterText.scrollHeight;
+  if (isFullBookView) return;
+  const html = segments
+    .map((segment, index) => {
+      const safeText = escapeHtml(segment);
+      if (index < segmentIndex) {
+        return `<p class="segment read-text" data-seg-index="${index}">${safeText}</p>`;
+      }
+      if (index === segmentIndex) {
+        return `<p class="segment reading-now" data-seg-index="${index}">${safeText}</p>`;
+      }
+      return `<p class="segment unread-text" data-seg-index="${index}">${safeText}</p>`;
+    })
+    .join("");
+  chapterText.innerHTML = html;
+  const currentNode = chapterText.querySelector(".reading-now");
+  if (currentNode) {
+    currentNode.scrollIntoView({ block: "center" });
+  }
   if (nextText) {
     const next = segments[segmentIndex + 1];
     nextText.textContent = next ? next : "—";
@@ -643,6 +688,7 @@ async function loadChapter(index, resumeSegment = 0) {
   updateButtons();
   saveState();
   prefetchSegment(segmentIndex);
+  prefetchNextSegments(segmentIndex);
 }
 
 function renderToc() {
@@ -652,11 +698,98 @@ function renderToc() {
     const button = document.createElement("button");
     button.textContent = item.label;
     button.addEventListener("click", () => {
-      loadChapter(index, 0);
+      loadChapter(index, 0).then(() => {
+        play();
+      });
     });
     li.appendChild(button);
     tocList.appendChild(li);
   });
+}
+
+function buildTocLabelMap() {
+  tocLabelMap = new Map();
+  tocItems.forEach((item) => {
+    const href = item.href?.split("#")[0];
+    if (href && !tocLabelMap.has(href)) {
+      tocLabelMap.set(href, item.label);
+    }
+  });
+}
+
+function getSectionLabel(section, index) {
+  const normalized = section?.href?.split("#")[0];
+  if (normalized && tocLabelMap.has(normalized)) {
+    return tocLabelMap.get(normalized);
+  }
+  return section?.idref ? `Capítulo ${index + 1}` : `Seção ${index + 1}`;
+}
+
+async function loadFullBookHtml() {
+  if (!book) return "";
+  if (fullBookHtml || fullBookLoading) return fullBookHtml;
+  fullBookLoading = true;
+  const parts = [];
+  for (let i = 0; i < book.spine.spineItems.length; i += 1) {
+    const section = book.spine.spineItems[i];
+    let text = "";
+    try {
+      const doc = await section.load(book.load.bind(book));
+      text = extractTextFromDocument(doc);
+      section.unload();
+    } catch (error) {
+      console.error("Erro ao carregar seção do livro:", error);
+      text = "";
+    }
+    if (!text) continue;
+    const label = escapeHtml(getSectionLabel(section, i));
+    parts.push(`<h3 class="book-section-title">${label}</h3>`);
+    const paragraphs = text
+      .split(/\n{2,}/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => `<p class="book-paragraph">${escapeHtml(part)}</p>`)
+      .join("");
+    parts.push(paragraphs);
+  }
+  fullBookHtml = parts.join("");
+  fullBookLoading = false;
+  return fullBookHtml;
+}
+
+async function showFullBookView() {
+  if (!chapterText) return;
+  isFullBookView = true;
+  chapterText.innerHTML = "<p class=\"book-paragraph\">Carregando livro inteiro...</p>";
+  const html = await loadFullBookHtml();
+  if (!html) {
+    chapterText.innerHTML = "<p class=\"book-paragraph\">Não foi possível carregar o livro inteiro.</p>";
+    return;
+  }
+  chapterText.innerHTML = html;
+}
+
+function showChapterView() {
+  isFullBookView = false;
+  updateReadText();
+}
+
+function setSegment(index, autoplay = false) {
+  if (!segments.length) return;
+  const clamped = Math.max(0, Math.min(index, segments.length - 1));
+  if (clamped === segmentIndex) return;
+  segmentIndex = clamped;
+  saveState();
+  updateStatus();
+  updateCurrentText();
+  updateReadText();
+  if (autoplay) {
+    stopPlayback();
+    isPlaying = true;
+    isPaused = false;
+    playbackSessionId += 1;
+    speakCurrentSegment();
+  }
 }
 
 function getBookId(file) {
@@ -699,6 +832,12 @@ async function loadBook(file) {
     }
 
     renderToc();
+    buildTocLabelMap();
+    fullBookHtml = "";
+    isFullBookView = false;
+    if (fullBookToggle) {
+      fullBookToggle.textContent = "Ver livro inteiro";
+    }
 
     const state = loadState(currentBookId);
     if (!lastServerState) {
@@ -826,5 +965,28 @@ if (tocToggle) {
     section.classList.toggle("collapsed");
     const isCollapsed = section.classList.contains("collapsed");
     tocToggle.textContent = isCollapsed ? "Mostrar" : "Ocultar";
+  });
+}
+
+if (fullBookToggle) {
+  fullBookToggle.addEventListener("click", () => {
+    if (isFullBookView) {
+      showChapterView();
+      fullBookToggle.textContent = "Ver livro inteiro";
+    } else {
+      showFullBookView();
+      fullBookToggle.textContent = "Ver só capítulo";
+    }
+  });
+}
+
+if (chapterText) {
+  chapterText.addEventListener("click", (event) => {
+    if (isFullBookView) return;
+    const target = event.target.closest("[data-seg-index]");
+    if (!target) return;
+    const index = Number(target.dataset.segIndex);
+    if (Number.isNaN(index)) return;
+    setSegment(index, true);
   });
 }
