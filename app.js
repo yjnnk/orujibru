@@ -20,6 +20,9 @@ const progressInfo = document.getElementById("progressInfo");
 const errorInfo = document.getElementById("errorInfo");
 const currentText = document.getElementById("currentText");
 const chapterText = document.getElementById("chapterText");
+const nextText = document.getElementById("nextText");
+const tocToggle = document.getElementById("tocToggle");
+const fullBookToggle = document.getElementById("fullBookToggle");
 let lastTextLength = 0;
 
 let book = null;
@@ -38,9 +41,18 @@ let currentChapterText = "";
 let voices = [];
 let selectedVoice = "";
 let defaultConfig = null;
+let lastServerState = null;
+let saveStateTimer = null;
+let audioCache = new Map();
+let prefetchInFlight = new Map();
+let isFullBookView = false;
+let fullBookHtml = "";
+let fullBookLoading = false;
+let tocLabelMap = new Map();
 
 const MAX_SEGMENT_LENGTH = 1000;
 const DEFAULT_LANG = "pt-br";
+const PREFETCH_AHEAD = 2;
 
 const audioPlayer = new Audio();
 
@@ -88,8 +100,11 @@ function setError(message) {
 function saveState() {
   if (!currentBookId) return;
   const state = {
+    bookId: currentBookId,
+    bookTitle: book?.title || "EPUB",
     chapterIndex: currentChapterIndex,
     segmentIndex,
+    lastReadIndex: Math.max(0, segmentIndex - 1),
     rate: Number(rateRange.value),
     pause: Number(pauseRange.value),
     pitch: Number(pitchRange.value),
@@ -99,6 +114,7 @@ function saveState() {
     lang: langInput.value.trim(),
   };
   localStorage.setItem(`audibook_state_${currentBookId}`, JSON.stringify(state));
+  queueServerStateSave(state);
 }
 
 function loadState(bookId) {
@@ -123,6 +139,37 @@ function setPitchDisplay(value) {
   pitchValue.textContent = Number(value).toFixed(2);
 }
 
+function queueServerStateSave(state) {
+  if (saveStateTimer) clearTimeout(saveStateTimer);
+  saveStateTimer = setTimeout(() => {
+    saveStateTimer = null;
+    fetch("/api/last-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bookId: state.bookId,
+        bookTitle: state.bookTitle,
+        chapterIndex: state.chapterIndex,
+        segmentIndex: state.segmentIndex,
+        lastReadIndex: state.lastReadIndex,
+        updatedAt: Date.now(),
+      }),
+    }).catch(() => {});
+  }, 250);
+}
+
+async function loadServerState() {
+  try {
+    const response = await fetch("/api/last-state", { cache: "no-store" });
+    if (!response.ok) return null;
+    const data = await response.json();
+    lastServerState = data && typeof data === "object" ? data : null;
+  } catch (error) {
+    lastServerState = null;
+  }
+  return lastServerState;
+}
+
 function getTtsConfig() {
   return {
     modelPath: modelPathInput.value.trim(),
@@ -130,6 +177,15 @@ function getTtsConfig() {
     voice: selectedVoice,
     lang: langInput.value.trim() || DEFAULT_LANG,
   };
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function applyDefaultConfig(config, force = false) {
@@ -217,6 +273,8 @@ function stopPlayback() {
     clearTimeout(pendingTimeout);
     pendingTimeout = null;
   }
+  cancelPrefetch();
+  audioCache.clear();
   if (currentAudioUrl) {
     URL.revokeObjectURL(currentAudioUrl);
     currentAudioUrl = null;
@@ -241,6 +299,18 @@ async function fetchTtsAudio(text) {
 
   const controller = new AbortController();
   currentAbortController = controller;
+  const cached = audioCache.get(segmentIndex);
+  if (cached) return cached;
+  const inflight = prefetchInFlight.get(segmentIndex);
+  if (inflight?.request) {
+    try {
+      await inflight.request;
+      const cachedAfter = audioCache.get(segmentIndex);
+      if (cachedAfter) return cachedAfter;
+    } catch (error) {
+      prefetchInFlight.delete(segmentIndex);
+    }
+  }
   const response = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -259,7 +329,68 @@ async function fetchTtsAudio(text) {
     const message = await response.text();
     throw new Error(message || "Falha ao gerar áudio");
   }
-  return response.blob();
+  const blob = await response.blob();
+  audioCache.set(segmentIndex, blob);
+  pruneAudioCache(segmentIndex);
+  return blob;
+}
+
+function pruneAudioCache(centerIndex) {
+  const keys = Array.from(audioCache.keys());
+  keys.forEach((key) => {
+    if (Math.abs(key - centerIndex) > PREFETCH_AHEAD) {
+      audioCache.delete(key);
+    }
+  });
+}
+
+function prefetchSegment(index) {
+  if (!segments.length || index < 0 || index >= segments.length) return;
+  if (audioCache.has(index) || prefetchInFlight.has(index)) return;
+  const { modelPath, voicesPath, voice, lang } = getTtsConfig();
+  if (!modelPath || !voicesPath || !voice) return;
+  const controller = new AbortController();
+  const text = segments[index];
+  const request = fetch("/api/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      modelPath,
+      voicesPath,
+      voice,
+      speed: Number(rateRange.value),
+      lang,
+    }),
+    signal: controller.signal,
+  })
+    .then((response) => {
+      if (!response.ok) throw new Error("Falha ao pregerar audio");
+      return response.blob();
+    })
+    .then((blob) => {
+      audioCache.set(index, blob);
+      pruneAudioCache(index);
+    })
+    .catch(() => {})
+    .finally(() => {
+      prefetchInFlight.delete(index);
+    });
+
+  prefetchInFlight.set(index, { controller, request });
+}
+
+function prefetchNextSegments(startIndex) {
+  for (let i = 1; i <= PREFETCH_AHEAD; i += 1) {
+    prefetchSegment(startIndex + i);
+  }
+}
+
+function cancelPrefetch() {
+  prefetchInFlight.forEach((value) => {
+    if (value?.controller) value.controller.abort();
+  });
+  prefetchInFlight.clear();
 }
 
 async function speakCurrentSegment() {
@@ -293,11 +424,14 @@ async function speakCurrentSegment() {
   currentAudioUrl = URL.createObjectURL(audioBlob);
   audioPlayer.src = currentAudioUrl;
   audioPlayer.playbackRate = Number(rateRange.value);
+  prefetchNextSegments(segmentIndex);
   audioPlayer.onended = () => {
     segmentIndex += 1;
     saveState();
     updateStatus();
     updateCurrentText();
+    updateReadText();
+    prefetchNextSegments(segmentIndex);
     if (isPlaying && !isPaused) {
       const pauseMs = Number(pauseRange.value) || 0;
       if (pauseMs > 0) {
@@ -351,9 +485,44 @@ function pause() {
 function updateCurrentText() {
   if (!segments.length || segmentIndex >= segments.length) {
     currentText.textContent = "—";
+    if (nextText) nextText.textContent = "—";
     return;
   }
   currentText.textContent = segments[segmentIndex];
+  if (nextText) {
+    const next = segments[segmentIndex + 1];
+    nextText.textContent = next ? next : "—";
+  }
+}
+
+function updateReadText() {
+  if (!segments.length || segmentIndex >= segments.length) {
+    chapterText.textContent = "";
+    if (nextText) nextText.textContent = "—";
+    return;
+  }
+  if (isFullBookView) return;
+  const html = segments
+    .map((segment, index) => {
+      const safeText = escapeHtml(segment);
+      if (index < segmentIndex) {
+        return `<p class="segment read-text" data-seg-index="${index}">${safeText}</p>`;
+      }
+      if (index === segmentIndex) {
+        return `<p class="segment reading-now" data-seg-index="${index}">${safeText}</p>`;
+      }
+      return `<p class="segment unread-text" data-seg-index="${index}">${safeText}</p>`;
+    })
+    .join("");
+  chapterText.innerHTML = html;
+  const currentNode = chapterText.querySelector(".reading-now");
+  if (currentNode) {
+    currentNode.scrollIntoView({ block: "center" });
+  }
+  if (nextText) {
+    const next = segments[segmentIndex + 1];
+    nextText.textContent = next ? next : "—";
+  }
 }
 
 function splitSentences(text) {
@@ -414,7 +583,11 @@ function extractTextFromDocument(doc) {
     parsedDoc.querySelectorAll(selector).forEach((node) => node.remove());
   });
 
-  const paragraphs = Array.from(parsedDoc.body?.querySelectorAll("p") || [])
+  const paragraphs = Array.from(
+    parsedDoc.body?.querySelectorAll(
+      "p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, pre"
+    ) || []
+  )
     .map((node) => node.textContent.trim())
     .filter(Boolean);
 
@@ -443,6 +616,24 @@ function resolveSection(item, index) {
     return book.spine.spineItems[index];
   }
   return null;
+}
+
+function flattenToc(items, depth = 0) {
+  const result = [];
+  (items || []).forEach((item) => {
+    if (item && (item.href || item.idref)) {
+      const prefix = depth > 0 ? "- ".repeat(depth) : "";
+      result.push({
+        label: `${prefix}${item.label || "Seção"}`,
+        href: item.href,
+        idref: item.idref,
+      });
+    }
+    if (item?.subitems?.length) {
+      result.push(...flattenToc(item.subitems, depth + 1));
+    }
+  });
+  return result;
 }
 
 async function loadChapter(index, resumeSegment = 0) {
@@ -484,7 +675,7 @@ async function loadChapter(index, resumeSegment = 0) {
 
   lastTextLength = text.length;
   currentChapterText = text;
-  chapterText.textContent = currentChapterText;
+  chapterText.textContent = "";
 
   segments = segmentText(text);
   segmentIndex = Math.min(resumeSegment, segments.length - 1);
@@ -492,9 +683,12 @@ async function loadChapter(index, resumeSegment = 0) {
 
   currentChapterIndex = index;
   updateCurrentText();
+  updateReadText();
   updateStatus();
   updateButtons();
   saveState();
+  prefetchSegment(segmentIndex);
+  prefetchNextSegments(segmentIndex);
 }
 
 function renderToc() {
@@ -504,11 +698,98 @@ function renderToc() {
     const button = document.createElement("button");
     button.textContent = item.label;
     button.addEventListener("click", () => {
-      loadChapter(index, 0);
+      loadChapter(index, 0).then(() => {
+        play();
+      });
     });
     li.appendChild(button);
     tocList.appendChild(li);
   });
+}
+
+function buildTocLabelMap() {
+  tocLabelMap = new Map();
+  tocItems.forEach((item) => {
+    const href = item.href?.split("#")[0];
+    if (href && !tocLabelMap.has(href)) {
+      tocLabelMap.set(href, item.label);
+    }
+  });
+}
+
+function getSectionLabel(section, index) {
+  const normalized = section?.href?.split("#")[0];
+  if (normalized && tocLabelMap.has(normalized)) {
+    return tocLabelMap.get(normalized);
+  }
+  return section?.idref ? `Capítulo ${index + 1}` : `Seção ${index + 1}`;
+}
+
+async function loadFullBookHtml() {
+  if (!book) return "";
+  if (fullBookHtml || fullBookLoading) return fullBookHtml;
+  fullBookLoading = true;
+  const parts = [];
+  for (let i = 0; i < book.spine.spineItems.length; i += 1) {
+    const section = book.spine.spineItems[i];
+    let text = "";
+    try {
+      const doc = await section.load(book.load.bind(book));
+      text = extractTextFromDocument(doc);
+      section.unload();
+    } catch (error) {
+      console.error("Erro ao carregar seção do livro:", error);
+      text = "";
+    }
+    if (!text) continue;
+    const label = escapeHtml(getSectionLabel(section, i));
+    parts.push(`<h3 class="book-section-title">${label}</h3>`);
+    const paragraphs = text
+      .split(/\n{2,}/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => `<p class="book-paragraph">${escapeHtml(part)}</p>`)
+      .join("");
+    parts.push(paragraphs);
+  }
+  fullBookHtml = parts.join("");
+  fullBookLoading = false;
+  return fullBookHtml;
+}
+
+async function showFullBookView() {
+  if (!chapterText) return;
+  isFullBookView = true;
+  chapterText.innerHTML = "<p class=\"book-paragraph\">Carregando livro inteiro...</p>";
+  const html = await loadFullBookHtml();
+  if (!html) {
+    chapterText.innerHTML = "<p class=\"book-paragraph\">Não foi possível carregar o livro inteiro.</p>";
+    return;
+  }
+  chapterText.innerHTML = html;
+}
+
+function showChapterView() {
+  isFullBookView = false;
+  updateReadText();
+}
+
+function setSegment(index, autoplay = false) {
+  if (!segments.length) return;
+  const clamped = Math.max(0, Math.min(index, segments.length - 1));
+  if (clamped === segmentIndex) return;
+  segmentIndex = clamped;
+  saveState();
+  updateStatus();
+  updateCurrentText();
+  updateReadText();
+  if (autoplay) {
+    stopPlayback();
+    isPlaying = true;
+    isPaused = false;
+    playbackSessionId += 1;
+    speakCurrentSegment();
+  }
 }
 
 function getBookId(file) {
@@ -527,7 +808,7 @@ async function loadBook(file) {
     book.title = metadata?.title || "EPUB";
 
     const nav = await book.loaded.navigation;
-    tocItems = nav.toc || [];
+    tocItems = flattenToc(nav.toc || []);
 
     if (tocItems.length === 0) {
       tocItems = book.spine.spineItems.map((item, index) => ({
@@ -535,11 +816,34 @@ async function loadBook(file) {
         href: item.href,
         idref: item.idref,
       }));
+    } else {
+      const tocHrefs = new Set(tocItems.map((item) => item.href?.split("#")[0]).filter(Boolean));
+      book.spine.spineItems.forEach((item, index) => {
+        const normalized = item.href?.split("#")[0];
+        if (normalized && !tocHrefs.has(normalized)) {
+          tocItems.push({
+            label: item.idref ? `Capítulo ${index + 1}` : `Seção ${index + 1}`,
+            href: item.href,
+            idref: item.idref,
+          });
+          tocHrefs.add(normalized);
+        }
+      });
     }
 
     renderToc();
+    buildTocLabelMap();
+    fullBookHtml = "";
+    isFullBookView = false;
+    if (fullBookToggle) {
+      fullBookToggle.textContent = "Ver livro inteiro";
+    }
 
     const state = loadState(currentBookId);
+    if (!lastServerState) {
+      await loadServerState();
+    }
+    const serverState = lastServerState && lastServerState.bookId === currentBookId ? lastServerState : null;
     if (state) {
       rateRange.value = state.rate || 1;
       pauseRange.value = state.pause ?? 300;
@@ -554,6 +858,9 @@ async function loadBook(file) {
       setPitchDisplay(pitchRange.value);
       await loadVoices();
       await loadChapter(state.chapterIndex ?? 0, state.segmentIndex ?? 0);
+    } else if (serverState) {
+      await loadVoices();
+      await loadChapter(serverState.chapterIndex ?? 0, serverState.segmentIndex ?? 0);
     } else if (tocItems.length > 0) {
       await loadChapter(0, 0);
     }
@@ -592,6 +899,8 @@ rateRange.addEventListener("input", (event) => {
   if (isPlaying && !isPaused) {
     audioPlayer.playbackRate = Number(event.target.value);
   }
+  audioCache.clear();
+  cancelPrefetch();
   saveState();
 });
 
@@ -607,20 +916,28 @@ pitchRange.addEventListener("input", (event) => {
 
 modelPathInput.addEventListener("change", () => {
   saveState();
+  audioCache.clear();
+  cancelPrefetch();
   loadVoices();
 });
 
 voicesPathInput.addEventListener("change", () => {
   saveState();
+  audioCache.clear();
+  cancelPrefetch();
   loadVoices();
 });
 
 voiceSelect.addEventListener("change", (event) => {
   selectedVoice = event.target.value;
+  audioCache.clear();
+  cancelPrefetch();
   saveState();
 });
 
 langInput.addEventListener("change", () => {
+  audioCache.clear();
+  cancelPrefetch();
   saveState();
 });
 
@@ -632,5 +949,44 @@ setRateDisplay(rateRange.value);
 setPauseDisplay(pauseRange.value);
 setPitchDisplay(pitchRange.value);
 loadLocalConfig();
+loadServerState();
 updateButtons();
 updateStatus();
+
+if (tocToggle) {
+  const section = tocToggle.closest(".chapter-list");
+  if (section) {
+    const isCollapsed = section.classList.contains("collapsed");
+    tocToggle.textContent = isCollapsed ? "Mostrar" : "Ocultar";
+  }
+  tocToggle.addEventListener("click", () => {
+    const section = tocToggle.closest(".chapter-list");
+    if (!section) return;
+    section.classList.toggle("collapsed");
+    const isCollapsed = section.classList.contains("collapsed");
+    tocToggle.textContent = isCollapsed ? "Mostrar" : "Ocultar";
+  });
+}
+
+if (fullBookToggle) {
+  fullBookToggle.addEventListener("click", () => {
+    if (isFullBookView) {
+      showChapterView();
+      fullBookToggle.textContent = "Ver livro inteiro";
+    } else {
+      showFullBookView();
+      fullBookToggle.textContent = "Ver só capítulo";
+    }
+  });
+}
+
+if (chapterText) {
+  chapterText.addEventListener("click", (event) => {
+    if (isFullBookView) return;
+    const target = event.target.closest("[data-seg-index]");
+    if (!target) return;
+    const index = Number(target.dataset.segIndex);
+    if (Number.isNaN(index)) return;
+    setSegment(index, true);
+  });
+}

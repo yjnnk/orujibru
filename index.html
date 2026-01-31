@@ -73,15 +73,25 @@
         <div id="errorInfo" class="error hidden"></div>
       </section>
 
-      <section class="chapter-list">
-        <h2>Capítulos</h2>
+      <section class="chapter-list collapsed">
+        <div class="chapter-header">
+          <h2>Sumário</h2>
+          <button id="tocToggle" type="button">Ocultar</button>
+        </div>
         <ul id="tocList"></ul>
       </section>
 
       <section class="text-panel">
-        <h2>Texto a ser lido</h2>
+        <div class="text-header">
+          <h2>Texto sendo lido</h2>
+          <button id="fullBookToggle" type="button">Ver livro inteiro</button>
+        </div>
         <div class="current-text" id="currentText">—</div>
         <div class="chapter-text" id="chapterText"></div>
+        <div class="next-text">
+          <div class="next-label">Próxima parte</div>
+          <div id="nextText">—</div>
+        </div>
       </section>
     </main>
 
