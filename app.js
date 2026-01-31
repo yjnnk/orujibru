@@ -10,7 +10,10 @@ const pauseRange = document.getElementById("pauseRange");
 const pauseValue = document.getElementById("pauseValue");
 const pitchRange = document.getElementById("pitchRange");
 const pitchValue = document.getElementById("pitchValue");
+const modelPathInput = document.getElementById("modelPath");
+const voicesPathInput = document.getElementById("voicesPath");
 const voiceSelect = document.getElementById("voiceSelect");
+const langInput = document.getElementById("langInput");
 const bookInfo = document.getElementById("bookInfo");
 const chapterInfo = document.getElementById("chapterInfo");
 const progressInfo = document.getElementById("progressInfo");
@@ -26,17 +29,25 @@ let currentChapterIndex = -1;
 let segments = [];
 let segmentIndex = 0;
 let isPlaying = false;
-let voices = [];
-let selectedVoiceURI = "";
-let currentUtterance = null;
+let isPaused = false;
+let playbackSessionId = 0;
+let currentAudioUrl = null;
+let pendingTimeout = null;
+let currentAbortController = null;
 let currentChapterText = "";
+let voices = [];
+let selectedVoice = "";
+let defaultConfig = null;
 
 const MAX_SEGMENT_LENGTH = 1000;
+const DEFAULT_LANG = "pt-br";
+
+const audioPlayer = new Audio();
 
 function updateButtons() {
   const hasBook = !!book;
-  playBtn.disabled = !hasBook || segments.length === 0 || isPlaying;
-  pauseBtn.disabled = !hasBook || !isPlaying;
+  playBtn.disabled = !hasBook || segments.length === 0 || (isPlaying && !isPaused);
+  pauseBtn.disabled = !hasBook || !isPlaying || isPaused;
   prevBtn.disabled = !hasBook || currentChapterIndex <= 0;
   nextBtn.disabled = !hasBook || currentChapterIndex < 0 || currentChapterIndex >= tocItems.length - 1;
 }
@@ -79,10 +90,13 @@ function saveState() {
   const state = {
     chapterIndex: currentChapterIndex,
     segmentIndex,
-    voiceURI: selectedVoiceURI,
     rate: Number(rateRange.value),
     pause: Number(pauseRange.value),
     pitch: Number(pitchRange.value),
+    modelPath: modelPathInput.value.trim(),
+    voicesPath: voicesPathInput.value.trim(),
+    voice: selectedVoice,
+    lang: langInput.value.trim(),
   };
   localStorage.setItem(`audibook_state_${currentBookId}`, JSON.stringify(state));
 }
@@ -109,92 +123,228 @@ function setPitchDisplay(value) {
   pitchValue.textContent = Number(value).toFixed(2);
 }
 
-function populateVoices() {
-  voices = window.speechSynthesis.getVoices().filter((voice) => voice.lang);
-  voiceSelect.innerHTML = "";
-  voices.forEach((voice) => {
-    const option = document.createElement("option");
-    option.value = voice.voiceURI;
-    option.textContent = `${voice.name} (${voice.lang})`;
-    voiceSelect.appendChild(option);
-  });
+function getTtsConfig() {
+  return {
+    modelPath: modelPathInput.value.trim(),
+    voicesPath: voicesPathInput.value.trim(),
+    voice: selectedVoice,
+    lang: langInput.value.trim() || DEFAULT_LANG,
+  };
+}
 
-  if (voices.length > 0) {
-    if (!selectedVoiceURI) {
-      const preferred = voices.find((voice) => voice.lang.toLowerCase().startsWith("pt"));
-      selectedVoiceURI = (preferred || voices[0]).voiceURI;
-    }
-    voiceSelect.value = selectedVoiceURI;
-  } else {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "Nenhuma voz disponível";
-    voiceSelect.appendChild(option);
+function applyDefaultConfig(config, force = false) {
+  if (!config) return;
+  if (config.modelPath && (force || !modelPathInput.value.trim())) {
+    modelPathInput.value = String(config.modelPath);
+  }
+  if (config.voicesPath && (force || !voicesPathInput.value.trim())) {
+    voicesPathInput.value = String(config.voicesPath);
+  }
+  if (config.lang && (force || !langInput.value.trim())) {
+    langInput.value = String(config.lang);
+  }
+  if (config.voice && (force || !selectedVoice)) {
+    selectedVoice = String(config.voice);
   }
 }
 
-function getVoice() {
-  return voices.find((voice) => voice.voiceURI === selectedVoiceURI) || null;
+async function loadLocalConfig() {
+  try {
+    const response = await fetch("/local-config.json", { cache: "no-store" });
+    if (!response.ok) {
+      await loadVoices();
+      return;
+    }
+    defaultConfig = await response.json();
+    applyDefaultConfig(defaultConfig, true);
+    await loadVoices();
+  } catch (error) {
+    console.warn("Nao foi possivel carregar local-config.json:", error);
+    await loadVoices();
+  }
+}
+
+async function loadVoices() {
+  const modelPath = modelPathInput.value.trim();
+  const voicesPath = voicesPathInput.value.trim();
+  if (!modelPath || !voicesPath) {
+    voiceSelect.innerHTML = "<option value=\"\">Informe o modelo e o arquivo de vozes</option>";
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/voices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modelPath, voicesPath }),
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || "Falha ao carregar vozes");
+    }
+    const data = await response.json();
+    voices = Array.isArray(data.voices) ? data.voices : [];
+    voiceSelect.innerHTML = "";
+    if (!voices.length) {
+      voiceSelect.innerHTML = "<option value=\"\">Nenhuma voz encontrada</option>";
+      selectedVoice = "";
+      return;
+    }
+    voices.forEach((voice) => {
+      const option = document.createElement("option");
+      option.value = voice;
+      option.textContent = voice;
+      voiceSelect.appendChild(option);
+    });
+
+    if (!selectedVoice || !voices.includes(selectedVoice)) {
+      selectedVoice = data.defaultVoice && voices.includes(data.defaultVoice) ? data.defaultVoice : voices[0];
+    }
+    voiceSelect.value = selectedVoice;
+  } catch (error) {
+    console.error("Erro ao carregar vozes:", error);
+    voiceSelect.innerHTML = "<option value=\"\">Erro ao carregar vozes</option>";
+    setError(error.message || "Falha ao carregar vozes.");
+  }
 }
 
 function stopPlayback() {
-  window.speechSynthesis.cancel();
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+  }
+  if (pendingTimeout) {
+    clearTimeout(pendingTimeout);
+    pendingTimeout = null;
+  }
+  if (currentAudioUrl) {
+    URL.revokeObjectURL(currentAudioUrl);
+    currentAudioUrl = null;
+  }
+  audioPlayer.pause();
+  audioPlayer.removeAttribute("src");
   isPlaying = false;
-  currentUtterance = null;
+  isPaused = false;
   updateButtons();
 }
 
-function speakCurrentSegment() {
+async function fetchTtsAudio(text) {
+  const { modelPath, voicesPath, voice, lang } = getTtsConfig();
+  if (!modelPath || !voicesPath) {
+    setError("Defina o caminho do modelo e do arquivo de vozes.");
+    throw new Error("Kokoro config missing");
+  }
+  if (!voice) {
+    setError("Selecione uma voz antes de iniciar.");
+    throw new Error("Kokoro voice missing");
+  }
+
+  const controller = new AbortController();
+  currentAbortController = controller;
+  const response = await fetch("/api/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      modelPath,
+      voicesPath,
+      voice,
+      speed: Number(rateRange.value),
+      lang,
+    }),
+    signal: controller.signal,
+  });
+  currentAbortController = null;
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Falha ao gerar áudio");
+  }
+  return response.blob();
+}
+
+async function speakCurrentSegment() {
   if (!segments.length || segmentIndex >= segments.length) {
     isPlaying = false;
+    isPaused = false;
     updateButtons();
     return;
   }
 
-  const utterance = new SpeechSynthesisUtterance(segments[segmentIndex]);
-  utterance.voice = getVoice();
-  utterance.rate = Number(rateRange.value);
-  utterance.pitch = Number(pitchRange.value);
-  utterance.onend = () => {
+  const sessionId = playbackSessionId;
+  const text = segments[segmentIndex];
+  let audioBlob;
+  try {
+    audioBlob = await fetchTtsAudio(text);
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    console.error("Erro ao gerar áudio:", error);
+    setError(error.message || "Falha ao gerar áudio com o Kokoro.");
+    isPlaying = false;
+    isPaused = false;
+    updateButtons();
+    return;
+  }
+
+  if (sessionId !== playbackSessionId) return;
+
+  if (currentAudioUrl) {
+    URL.revokeObjectURL(currentAudioUrl);
+  }
+  currentAudioUrl = URL.createObjectURL(audioBlob);
+  audioPlayer.src = currentAudioUrl;
+  audioPlayer.playbackRate = Number(rateRange.value);
+  audioPlayer.onended = () => {
     segmentIndex += 1;
     saveState();
     updateStatus();
     updateCurrentText();
-    if (isPlaying) {
+    if (isPlaying && !isPaused) {
       const pauseMs = Number(pauseRange.value) || 0;
       if (pauseMs > 0) {
-        setTimeout(() => {
-          if (isPlaying) speakCurrentSegment();
+        pendingTimeout = setTimeout(() => {
+          if (isPlaying && !isPaused) speakCurrentSegment();
         }, pauseMs);
       } else {
         speakCurrentSegment();
       }
     }
   };
-  utterance.onerror = () => {
+  audioPlayer.onerror = () => {
     isPlaying = false;
+    isPaused = false;
     updateButtons();
+    setError("Falha ao reproduzir o áudio do Kokoro.");
   };
-  currentUtterance = utterance;
-  window.speechSynthesis.speak(utterance);
+  try {
+    await audioPlayer.play();
+  } catch (error) {
+    console.error("Erro ao tocar áudio:", error);
+    setError("Não foi possível reproduzir o áudio.");
+    isPlaying = false;
+    isPaused = false;
+  }
   updateButtons();
 }
 
 function play() {
   if (!segments.length) return;
-  if (window.speechSynthesis.paused) {
-    window.speechSynthesis.resume();
-    isPlaying = true;
+  if (isPlaying && isPaused) {
+    isPaused = false;
+    audioPlayer.playbackRate = Number(rateRange.value);
+    audioPlayer.play().catch(() => {});
     updateButtons();
     return;
   }
   isPlaying = true;
+  isPaused = false;
+  playbackSessionId += 1;
   speakCurrentSegment();
 }
 
 function pause() {
-  window.speechSynthesis.pause();
-  isPlaying = false;
+  if (!isPlaying) return;
+  isPaused = true;
+  audioPlayer.pause();
   updateButtons();
 }
 
@@ -390,19 +540,23 @@ async function loadBook(file) {
     renderToc();
 
     const state = loadState(currentBookId);
-  if (state) {
-    selectedVoiceURI = state.voiceURI || selectedVoiceURI;
-    rateRange.value = state.rate || 1;
-    pauseRange.value = state.pause ?? 300;
-    pitchRange.value = state.pitch ?? 1;
-    setRateDisplay(rateRange.value);
-    setPauseDisplay(pauseRange.value);
-    setPitchDisplay(pitchRange.value);
-    populateVoices();
-    await loadChapter(state.chapterIndex ?? 0, state.segmentIndex ?? 0);
-  } else if (tocItems.length > 0) {
-    await loadChapter(0, 0);
-  }
+    if (state) {
+      rateRange.value = state.rate || 1;
+      pauseRange.value = state.pause ?? 300;
+      pitchRange.value = state.pitch ?? 1;
+      modelPathInput.value = state.modelPath || modelPathInput.value;
+      voicesPathInput.value = state.voicesPath || voicesPathInput.value;
+      selectedVoice = state.voice || selectedVoice;
+      langInput.value = state.lang || langInput.value;
+      applyDefaultConfig(defaultConfig, true);
+      setRateDisplay(rateRange.value);
+      setPauseDisplay(pauseRange.value);
+      setPitchDisplay(pitchRange.value);
+      await loadVoices();
+      await loadChapter(state.chapterIndex ?? 0, state.segmentIndex ?? 0);
+    } else if (tocItems.length > 0) {
+      await loadChapter(0, 0);
+    }
 
     updateStatus();
     updateButtons();
@@ -435,6 +589,9 @@ nextBtn.addEventListener("click", () => {
 
 rateRange.addEventListener("input", (event) => {
   setRateDisplay(event.target.value);
+  if (isPlaying && !isPaused) {
+    audioPlayer.playbackRate = Number(event.target.value);
+  }
   saveState();
 });
 
@@ -448,18 +605,32 @@ pitchRange.addEventListener("input", (event) => {
   saveState();
 });
 
-voiceSelect.addEventListener("change", (event) => {
-  selectedVoiceURI = event.target.value;
+modelPathInput.addEventListener("change", () => {
   saveState();
-  if (isPlaying) {
-    stopPlayback();
-  }
+  loadVoices();
 });
 
-window.speechSynthesis.onvoiceschanged = populateVoices;
-populateVoices();
+voicesPathInput.addEventListener("change", () => {
+  saveState();
+  loadVoices();
+});
+
+voiceSelect.addEventListener("change", (event) => {
+  selectedVoice = event.target.value;
+  saveState();
+});
+
+langInput.addEventListener("change", () => {
+  saveState();
+});
+
+if (!langInput.value) {
+  langInput.value = DEFAULT_LANG;
+}
+
 setRateDisplay(rateRange.value);
 setPauseDisplay(pauseRange.value);
 setPitchDisplay(pitchRange.value);
+loadLocalConfig();
 updateButtons();
 updateStatus();

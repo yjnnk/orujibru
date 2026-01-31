@@ -1,0 +1,7 @@
+{
+  "name": "orujibru",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}

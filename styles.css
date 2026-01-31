@@ -87,16 +87,23 @@ button:disabled {
 }
 
 select,
+input[type="text"],
 input[type="range"] {
   accent-color: #8d6e4a;
 }
 
-select {
+select,
+input[type="text"] {
   padding: 6px 10px;
   border-radius: 10px;
   border: 1px solid #bda98e;
   background: #fffaf3;
   min-width: 160px;
+}
+
+input[type="text"] {
+  width: 100%;
+  min-width: 220px;
 }
 
 .status {
