@@ -20,6 +20,8 @@ const progressInfo = document.getElementById("progressInfo");
 const errorInfo = document.getElementById("errorInfo");
 const currentText = document.getElementById("currentText");
 const chapterText = document.getElementById("chapterText");
+const nextText = document.getElementById("nextText");
+const tocToggle = document.getElementById("tocToggle");
 let lastTextLength = 0;
 
 let book = null;
@@ -38,8 +40,13 @@ let currentChapterText = "";
 let voices = [];
 let selectedVoice = "";
 let defaultConfig = null;
+let lastServerState = null;
+let saveStateTimer = null;
+let audioCache = new Map();
+let prefetchInFlight = new Map();
 
 const MAX_SEGMENT_LENGTH = 1000;
+const MAX_VISIBLE_SEGMENTS = 6;
 const DEFAULT_LANG = "pt-br";
 
 const audioPlayer = new Audio();
@@ -88,6 +95,8 @@ function setError(message) {
 function saveState() {
   if (!currentBookId) return;
   const state = {
+    bookId: currentBookId,
+    bookTitle: book?.title || "EPUB",
     chapterIndex: currentChapterIndex,
     segmentIndex,
     rate: Number(rateRange.value),
@@ -99,6 +108,7 @@ function saveState() {
     lang: langInput.value.trim(),
   };
   localStorage.setItem(`audibook_state_${currentBookId}`, JSON.stringify(state));
+  queueServerStateSave(state);
 }
 
 function loadState(bookId) {
@@ -121,6 +131,36 @@ function setPauseDisplay(value) {
 
 function setPitchDisplay(value) {
   pitchValue.textContent = Number(value).toFixed(2);
+}
+
+function queueServerStateSave(state) {
+  if (saveStateTimer) clearTimeout(saveStateTimer);
+  saveStateTimer = setTimeout(() => {
+    saveStateTimer = null;
+    fetch("/api/last-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bookId: state.bookId,
+        bookTitle: state.bookTitle,
+        chapterIndex: state.chapterIndex,
+        segmentIndex: state.segmentIndex,
+        updatedAt: Date.now(),
+      }),
+    }).catch(() => {});
+  }, 250);
+}
+
+async function loadServerState() {
+  try {
+    const response = await fetch("/api/last-state", { cache: "no-store" });
+    if (!response.ok) return null;
+    const data = await response.json();
+    lastServerState = data && typeof data === "object" ? data : null;
+  } catch (error) {
+    lastServerState = null;
+  }
+  return lastServerState;
 }
 
 function getTtsConfig() {
@@ -217,6 +257,8 @@ function stopPlayback() {
     clearTimeout(pendingTimeout);
     pendingTimeout = null;
   }
+  cancelPrefetch();
+  audioCache.clear();
   if (currentAudioUrl) {
     URL.revokeObjectURL(currentAudioUrl);
     currentAudioUrl = null;
@@ -241,6 +283,8 @@ async function fetchTtsAudio(text) {
 
   const controller = new AbortController();
   currentAbortController = controller;
+  const cached = audioCache.get(segmentIndex);
+  if (cached) return cached;
   const response = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -259,7 +303,62 @@ async function fetchTtsAudio(text) {
     const message = await response.text();
     throw new Error(message || "Falha ao gerar áudio");
   }
-  return response.blob();
+  const blob = await response.blob();
+  audioCache.set(segmentIndex, blob);
+  pruneAudioCache(segmentIndex);
+  return blob;
+}
+
+function pruneAudioCache(centerIndex) {
+  const keys = Array.from(audioCache.keys());
+  keys.forEach((key) => {
+    if (Math.abs(key - centerIndex) > 2) {
+      audioCache.delete(key);
+    }
+  });
+}
+
+function prefetchSegment(index) {
+  if (!segments.length || index < 0 || index >= segments.length) return;
+  if (audioCache.has(index) || prefetchInFlight.has(index)) return;
+  const { modelPath, voicesPath, voice, lang } = getTtsConfig();
+  if (!modelPath || !voicesPath || !voice) return;
+  const controller = new AbortController();
+  const text = segments[index];
+  const request = fetch("/api/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      modelPath,
+      voicesPath,
+      voice,
+      speed: Number(rateRange.value),
+      lang,
+    }),
+    signal: controller.signal,
+  })
+    .then((response) => {
+      if (!response.ok) throw new Error("Falha ao pregerar audio");
+      return response.blob();
+    })
+    .then((blob) => {
+      audioCache.set(index, blob);
+      pruneAudioCache(index);
+    })
+    .catch(() => {})
+    .finally(() => {
+      prefetchInFlight.delete(index);
+    });
+
+  prefetchInFlight.set(index, { controller, request });
+}
+
+function cancelPrefetch() {
+  prefetchInFlight.forEach((value) => {
+    if (value?.controller) value.controller.abort();
+  });
+  prefetchInFlight.clear();
 }
 
 async function speakCurrentSegment() {
@@ -293,11 +392,13 @@ async function speakCurrentSegment() {
   currentAudioUrl = URL.createObjectURL(audioBlob);
   audioPlayer.src = currentAudioUrl;
   audioPlayer.playbackRate = Number(rateRange.value);
+  prefetchSegment(segmentIndex + 1);
   audioPlayer.onended = () => {
     segmentIndex += 1;
     saveState();
     updateStatus();
     updateCurrentText();
+    updateReadText();
     if (isPlaying && !isPaused) {
       const pauseMs = Number(pauseRange.value) || 0;
       if (pauseMs > 0) {
@@ -351,9 +452,34 @@ function pause() {
 function updateCurrentText() {
   if (!segments.length || segmentIndex >= segments.length) {
     currentText.textContent = "—";
+    if (nextText) nextText.textContent = "—";
     return;
   }
   currentText.textContent = segments[segmentIndex];
+  if (nextText) {
+    const next = segments[segmentIndex + 1];
+    nextText.textContent = next ? next : "—";
+  }
+}
+
+function updateReadText() {
+  if (!segments.length || segmentIndex >= segments.length) {
+    chapterText.textContent = "";
+    if (nextText) nextText.textContent = "—";
+    return;
+  }
+  const start = Math.max(0, segmentIndex - (MAX_VISIBLE_SEGMENTS - 1));
+  const windowSegments = segments.slice(start, segmentIndex + 1);
+  const current = windowSegments.pop();
+  const pastText = windowSegments.join("\n\n");
+  const currentHtml = `<span class="reading-now">${current}</span>`;
+  const pastHtml = pastText ? `<span class="read-text">${pastText}</span>\n\n` : "";
+  chapterText.innerHTML = `${pastHtml}${currentHtml}`;
+  chapterText.scrollTop = chapterText.scrollHeight;
+  if (nextText) {
+    const next = segments[segmentIndex + 1];
+    nextText.textContent = next ? next : "—";
+  }
 }
 
 function splitSentences(text) {
@@ -484,7 +610,7 @@ async function loadChapter(index, resumeSegment = 0) {
 
   lastTextLength = text.length;
   currentChapterText = text;
-  chapterText.textContent = currentChapterText;
+  chapterText.textContent = "";
 
   segments = segmentText(text);
   segmentIndex = Math.min(resumeSegment, segments.length - 1);
@@ -492,9 +618,11 @@ async function loadChapter(index, resumeSegment = 0) {
 
   currentChapterIndex = index;
   updateCurrentText();
+  updateReadText();
   updateStatus();
   updateButtons();
   saveState();
+  prefetchSegment(segmentIndex);
 }
 
 function renderToc() {
@@ -540,6 +668,10 @@ async function loadBook(file) {
     renderToc();
 
     const state = loadState(currentBookId);
+    if (!lastServerState) {
+      await loadServerState();
+    }
+    const serverState = lastServerState && lastServerState.bookId === currentBookId ? lastServerState : null;
     if (state) {
       rateRange.value = state.rate || 1;
       pauseRange.value = state.pause ?? 300;
@@ -554,6 +686,9 @@ async function loadBook(file) {
       setPitchDisplay(pitchRange.value);
       await loadVoices();
       await loadChapter(state.chapterIndex ?? 0, state.segmentIndex ?? 0);
+    } else if (serverState) {
+      await loadVoices();
+      await loadChapter(serverState.chapterIndex ?? 0, serverState.segmentIndex ?? 0);
     } else if (tocItems.length > 0) {
       await loadChapter(0, 0);
     }
@@ -592,6 +727,8 @@ rateRange.addEventListener("input", (event) => {
   if (isPlaying && !isPaused) {
     audioPlayer.playbackRate = Number(event.target.value);
   }
+  audioCache.clear();
+  cancelPrefetch();
   saveState();
 });
 
@@ -607,20 +744,28 @@ pitchRange.addEventListener("input", (event) => {
 
 modelPathInput.addEventListener("change", () => {
   saveState();
+  audioCache.clear();
+  cancelPrefetch();
   loadVoices();
 });
 
 voicesPathInput.addEventListener("change", () => {
   saveState();
+  audioCache.clear();
+  cancelPrefetch();
   loadVoices();
 });
 
 voiceSelect.addEventListener("change", (event) => {
   selectedVoice = event.target.value;
+  audioCache.clear();
+  cancelPrefetch();
   saveState();
 });
 
 langInput.addEventListener("change", () => {
+  audioCache.clear();
+  cancelPrefetch();
   saveState();
 });
 
@@ -632,5 +777,21 @@ setRateDisplay(rateRange.value);
 setPauseDisplay(pauseRange.value);
 setPitchDisplay(pitchRange.value);
 loadLocalConfig();
+loadServerState();
 updateButtons();
 updateStatus();
+
+if (tocToggle) {
+  const section = tocToggle.closest(".chapter-list");
+  if (section) {
+    const isCollapsed = section.classList.contains("collapsed");
+    tocToggle.textContent = isCollapsed ? "Mostrar" : "Ocultar";
+  }
+  tocToggle.addEventListener("click", () => {
+    const section = tocToggle.closest(".chapter-list");
+    if (!section) return;
+    section.classList.toggle("collapsed");
+    const isCollapsed = section.classList.contains("collapsed");
+    tocToggle.textContent = isCollapsed ? "Mostrar" : "Ocultar";
+  });
+}

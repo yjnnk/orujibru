@@ -10,6 +10,7 @@ from kokoro_onnx import Kokoro
 HOST = "127.0.0.1"
 PORT = 5178
 BASE_DIR = Path(__file__).resolve().parent
+LAST_STATE_FILE = BASE_DIR / "last-state.json"
 
 _kokoro_cache: dict[tuple[str, str], Kokoro] = {}
 
@@ -58,7 +59,7 @@ class Handler(SimpleHTTPRequestHandler):
     self.wfile.write(encoded)
 
   def do_POST(self):
-    if self.path not in ("/api/tts", "/api/voices"):
+    if self.path not in ("/api/tts", "/api/voices", "/api/last-state"):
       self._send_text(404, "Not found")
       return
 
@@ -68,6 +69,15 @@ class Handler(SimpleHTTPRequestHandler):
       payload = json.loads(body or "{}")
     except Exception:
       self._send_text(400, "JSON invalido.")
+      return
+
+    if self.path == "/api/last-state":
+      try:
+        LAST_STATE_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+      except Exception:
+        self._send_text(500, "Falha ao salvar estado.")
+        return
+      self._send_json(200, {"ok": True})
       return
 
     model_path = str(payload.get("modelPath", "")).strip()
@@ -124,6 +134,21 @@ class Handler(SimpleHTTPRequestHandler):
     self.send_header("Content-Length", str(len(wav_data)))
     self.end_headers()
     self.wfile.write(wav_data)
+
+  def do_GET(self):
+    if self.path == "/api/last-state":
+      if not LAST_STATE_FILE.exists():
+        self._send_json(200, {})
+        return
+      try:
+        data = json.loads(LAST_STATE_FILE.read_text(encoding="utf-8"))
+      except Exception:
+        self._send_json(200, {})
+        return
+      self._send_json(200, data if isinstance(data, dict) else {})
+      return
+
+    super().do_GET()
 
 
 def main():
