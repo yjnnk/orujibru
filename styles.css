@@ -213,9 +213,9 @@ input[type="text"] {
   border-radius: 12px;
   background: #fbf8f2;
   border: 1px solid #e2d6c7;
-  max-height: 260px;
+  max-height: 45vh;
   overflow: auto;
-  white-space: pre-wrap;
+  white-space: normal;
   line-height: 1.6;
   color: #433a2f;
 }
@@ -269,6 +269,10 @@ input[type="text"] {
 
 .book-paragraph {
   margin: 0 0 10px;
+}
+
+.text-panel.full-book .chapter-text {
+  max-height: 65vh;
 }
 
 @media (max-width: 680px) {
