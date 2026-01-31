@@ -46,7 +46,6 @@ let audioCache = new Map();
 let prefetchInFlight = new Map();
 
 const MAX_SEGMENT_LENGTH = 1000;
-const MAX_VISIBLE_SEGMENTS = 6;
 const DEFAULT_LANG = "pt-br";
 
 const audioPlayer = new Audio();
@@ -468,10 +467,9 @@ function updateReadText() {
     if (nextText) nextText.textContent = "—";
     return;
   }
-  const start = Math.max(0, segmentIndex - (MAX_VISIBLE_SEGMENTS - 1));
-  const windowSegments = segments.slice(start, segmentIndex + 1);
-  const current = windowSegments.pop();
-  const pastText = windowSegments.join("\n\n");
+  const pastSegments = segments.slice(0, segmentIndex);
+  const current = segments[segmentIndex];
+  const pastText = pastSegments.join("\n\n");
   const currentHtml = `<span class="reading-now">${current}</span>`;
   const pastHtml = pastText ? `<span class="read-text">${pastText}</span>\n\n` : "";
   chapterText.innerHTML = `${pastHtml}${currentHtml}`;
@@ -540,7 +538,11 @@ function extractTextFromDocument(doc) {
     parsedDoc.querySelectorAll(selector).forEach((node) => node.remove());
   });
 
-  const paragraphs = Array.from(parsedDoc.body?.querySelectorAll("p") || [])
+  const paragraphs = Array.from(
+    parsedDoc.body?.querySelectorAll(
+      "p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, pre"
+    ) || []
+  )
     .map((node) => node.textContent.trim())
     .filter(Boolean);
 
@@ -569,6 +571,24 @@ function resolveSection(item, index) {
     return book.spine.spineItems[index];
   }
   return null;
+}
+
+function flattenToc(items, depth = 0) {
+  const result = [];
+  (items || []).forEach((item) => {
+    if (item && (item.href || item.idref)) {
+      const prefix = depth > 0 ? "- ".repeat(depth) : "";
+      result.push({
+        label: `${prefix}${item.label || "Seção"}`,
+        href: item.href,
+        idref: item.idref,
+      });
+    }
+    if (item?.subitems?.length) {
+      result.push(...flattenToc(item.subitems, depth + 1));
+    }
+  });
+  return result;
 }
 
 async function loadChapter(index, resumeSegment = 0) {
@@ -655,7 +675,7 @@ async function loadBook(file) {
     book.title = metadata?.title || "EPUB";
 
     const nav = await book.loaded.navigation;
-    tocItems = nav.toc || [];
+    tocItems = flattenToc(nav.toc || []);
 
     if (tocItems.length === 0) {
       tocItems = book.spine.spineItems.map((item, index) => ({
@@ -663,6 +683,19 @@ async function loadBook(file) {
         href: item.href,
         idref: item.idref,
       }));
+    } else {
+      const tocHrefs = new Set(tocItems.map((item) => item.href?.split("#")[0]).filter(Boolean));
+      book.spine.spineItems.forEach((item, index) => {
+        const normalized = item.href?.split("#")[0];
+        if (normalized && !tocHrefs.has(normalized)) {
+          tocItems.push({
+            label: item.idref ? `Capítulo ${index + 1}` : `Seção ${index + 1}`,
+            href: item.href,
+            idref: item.idref,
+          });
+          tocHrefs.add(normalized);
+        }
+      });
     }
 
     renderToc();
