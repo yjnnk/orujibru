@@ -13,10 +13,13 @@
           <h1>EPUB Audiobook Reader</h1>
           <p class="subtitle">Leitor offline com narração no Chrome</p>
         </div>
-        <label class="file-picker">
-          <input id="epubInput" type="file" accept=".epub" />
-          <span>Carregar EPUB</span>
-        </label>
+        <div class="header-actions">
+          <label class="file-picker">
+            <input id="epubInput" type="file" accept=".epub" />
+            <span>Carregar EPUB</span>
+          </label>
+          <button id="themeToggle" type="button" aria-label="Alternar dark mode">🌙</button>
+        </div>
       </header>
 
       <section class="controls">
@@ -96,6 +99,7 @@
           <div class="text-actions">
             <span id="ttsLoading" class="loading hidden">Gerando áudio...</span>
             <button id="pauseToggle" type="button" disabled>Pausar</button>
+            <button id="fullscreenToggle" type="button" aria-label="Tela cheia">⛶</button>
           </div>
         </div>
         <div class="text-toolbar">

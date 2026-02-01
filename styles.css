@@ -2,11 +2,41 @@
   box-sizing: border-box;
 }
 
+:root {
+  --bg: linear-gradient(160deg, #f7f1e7 0%, #f0efe9 45%, #e6eee5 100%);
+  --text: #1b1b1b;
+  --card: rgba(255, 255, 255, 0.8);
+  --card-strong: rgba(255, 255, 255, 0.92);
+  --border: #d8d2c7;
+  --muted: #6d645a;
+  --accent: #8d6e4a;
+  --accent-soft: #fff4e3;
+  --accent-border: #d6b894;
+  --chip: #fffaf3;
+  --chip-border: #bda98e;
+  --highlight: #fff1cf;
+}
+
+body.dark {
+  --bg: linear-gradient(160deg, #1a1c1e 0%, #1f2226 45%, #202427 100%);
+  --text: #e7e3db;
+  --card: rgba(36, 38, 42, 0.9);
+  --card-strong: rgba(32, 34, 38, 0.95);
+  --border: #3c3f44;
+  --muted: #b0a79a;
+  --accent: #d1b38a;
+  --accent-soft: rgba(62, 54, 43, 0.9);
+  --accent-border: #6e5a3f;
+  --chip: #2b2f34;
+  --chip-border: #4a4f57;
+  --highlight: rgba(209, 179, 138, 0.25);
+}
+
 body {
   margin: 0;
   font-family: "Georgia", "Times New Roman", serif;
-  color: #1b1b1b;
-  background: linear-gradient(160deg, #f7f1e7 0%, #f0efe9 45%, #e6eee5 100%);
+  color: var(--text);
+  background: var(--bg);
 }
 
 .app {
@@ -21,8 +51,8 @@ body {
   justify-content: space-between;
   gap: 16px;
   padding: 16px 20px;
-  background: rgba(255, 255, 255, 0.75);
-  border: 1px solid #d8d2c7;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: 0 12px 24px rgba(40, 33, 23, 0.08);
 }
@@ -35,7 +65,13 @@ body {
 
 .subtitle {
   margin: 0;
-  color: #6d645a;
+  color: var(--muted);
+}
+
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .file-picker {
@@ -44,8 +80,8 @@ body {
   gap: 10px;
   padding: 10px 16px;
   border-radius: 999px;
-  border: 1px solid #cdbca5;
-  background: #fffaf3;
+  border: 1px solid var(--chip-border);
+  background: var(--chip);
   cursor: pointer;
   font-size: 14px;
 }
@@ -60,8 +96,8 @@ body {
   gap: 16px;
   margin-top: 24px;
   padding: 18px 20px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid #d8d2c7;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 14px;
 }
 
@@ -75,8 +111,8 @@ body {
 button {
   padding: 8px 14px;
   border-radius: 10px;
-  border: 1px solid #bda98e;
-  background: #f7efe5;
+  border: 1px solid var(--chip-border);
+  background: var(--chip);
   cursor: pointer;
   font-size: 14px;
 }
@@ -89,16 +125,17 @@ button:disabled {
 select,
 input[type="text"],
 input[type="range"] {
-  accent-color: #8d6e4a;
+  accent-color: var(--accent);
 }
 
 select,
 input[type="text"] {
   padding: 6px 10px;
   border-radius: 10px;
-  border: 1px solid #bda98e;
-  background: #fffaf3;
+  border: 1px solid var(--chip-border);
+  background: var(--chip);
   min-width: 160px;
+  color: var(--text);
 }
 
 input[type="text"] {
@@ -106,15 +143,28 @@ input[type="text"] {
   min-width: 220px;
 }
 
+input[type="search"] {
+  color: var(--text);
+}
+
+select option {
+  color: var(--text);
+  background: var(--chip);
+}
+
+button {
+  color: var(--text);
+}
+
 .status {
   margin-top: 20px;
   padding: 16px 20px;
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid #d8d2c7;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 14px;
   display: grid;
   gap: 6px;
-  color: #4d4337;
+  color: var(--muted);
 }
 
 .error {
@@ -133,8 +183,8 @@ input[type="text"] {
 .chapter-list {
   margin-top: 24px;
   padding: 20px;
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid #d8d2c7;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 14px;
 }
 
@@ -179,8 +229,8 @@ input[type="text"] {
 .text-panel {
   margin-top: 24px;
   padding: 20px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid #d8d2c7;
+  background: var(--card-strong);
+  border: 1px solid var(--border);
   border-radius: 14px;
   display: grid;
   gap: 14px;
@@ -217,8 +267,8 @@ input[type="text"] {
   flex: 1;
   padding: 6px 10px;
   border-radius: 10px;
-  border: 1px solid #bda98e;
-  background: #fffaf3;
+  border: 1px solid var(--chip-border);
+  background: var(--chip);
 }
 
 .search-results,
@@ -231,8 +281,8 @@ input[type="text"] {
 .result-item {
   padding: 8px 10px;
   border-radius: 10px;
-  border: 1px solid #e2d6c7;
-  background: #fffaf3;
+  border: 1px solid var(--border);
+  background: var(--chip);
   font-size: 14px;
 }
 
@@ -273,7 +323,7 @@ input[type="text"] {
 
 .mini-map {
   position: relative;
-  background: #efe6d8;
+  background: rgba(141, 110, 74, 0.15);
   border-radius: 999px;
 }
 
@@ -282,7 +332,7 @@ input[type="text"] {
   left: 0;
   right: 0;
   height: 2px;
-  background: #8d6e4a;
+  background: var(--accent);
 }
 
 .mini-thumb {
@@ -291,7 +341,7 @@ input[type="text"] {
   right: 1px;
   height: 20px;
   border-radius: 999px;
-  background: #c9b08f;
+  background: var(--accent);
 }
 
 .loading {
@@ -309,13 +359,13 @@ input[type="text"] {
 .chapter-text {
   padding: 14px 16px;
   border-radius: 12px;
-  background: #fbf8f2;
-  border: 1px solid #e2d6c7;
+  background: rgba(141, 110, 74, 0.06);
+  border: 1px solid var(--border);
   max-height: 60vh;
   overflow: auto;
   white-space: normal;
   line-height: 1.6;
-  color: #433a2f;
+  color: var(--text);
 }
 
 .read-text {
@@ -323,11 +373,11 @@ input[type="text"] {
 }
 
 .reading-now {
-  color: #1b1b1b;
-  background: #fff4e3;
+  color: var(--text);
+  background: var(--accent-soft);
   border-radius: 6px;
   padding: 2px 4px;
-  border-left: 4px solid #c9b08f;
+  border-left: 4px solid var(--accent);
 }
 
 .segment {
@@ -340,15 +390,15 @@ input[type="text"] {
 }
 
 .unread-text {
-  color: #8f8375;
+  color: var(--muted);
 }
 
 .book-section-title {
   margin: 18px 0 8px;
   font-size: 18px;
-  color: #3d352c;
-  background: #f3eadc;
-  border-left: 4px solid #c9b08f;
+  color: var(--text);
+  background: rgba(141, 110, 74, 0.12);
+  border-left: 4px solid var(--accent);
   padding: 6px 10px;
 }
 
@@ -361,13 +411,36 @@ input[type="text"] {
 }
 
 .search-highlight {
-  background: #fff1cf;
+  background: var(--highlight);
   border-radius: 4px;
   padding: 0 2px;
 }
 
 .text-panel.full-book .chapter-text {
   max-height: 75vh;
+}
+
+.fullscreen .app {
+  max-width: none;
+  padding: 24px;
+}
+
+.fullscreen .text-panel {
+  height: calc(100vh - 140px);
+}
+
+.fullscreen .chapter-text {
+  max-height: calc(100vh - 240px);
+}
+
+@media (max-width: 680px) {
+  .fullscreen .text-panel {
+    height: auto;
+  }
+
+  .fullscreen .chapter-text {
+    max-height: 70vh;
+  }
 }
 
 @media (max-width: 680px) {
