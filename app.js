@@ -18,11 +18,11 @@ const bookInfo = document.getElementById("bookInfo");
 const chapterInfo = document.getElementById("chapterInfo");
 const progressInfo = document.getElementById("progressInfo");
 const errorInfo = document.getElementById("errorInfo");
-const currentText = document.getElementById("currentText");
 const chapterText = document.getElementById("chapterText");
 const tocToggle = document.getElementById("tocToggle");
-const fullBookToggle = document.getElementById("fullBookToggle");
 const textPanel = document.querySelector(".text-panel");
+const ttsLoading = document.getElementById("ttsLoading");
+const pauseToggle = document.getElementById("pauseToggle");
 let lastTextLength = 0;
 
 let book = null;
@@ -53,12 +53,13 @@ let loadToken = 0;
 let isZipBook = false;
 let lastRenderedSegmentIndex = -1;
 let spineItemsCache = [];
+let isGeneratingAudio = false;
 
 const MAX_SEGMENT_LENGTH = 1000;
-const DEFAULT_LANG = "en-us";
-const DEFAULT_VOICE = "am_adam";
-const PREFETCH_AHEAD = 4;
-const MAX_PREFETCH_INFLIGHT = 2;
+const DEFAULT_LANG = "en-gb";
+const DEFAULT_VOICE = "am_michael";
+const PREFETCH_AHEAD = 6;
+const MAX_PREFETCH_INFLIGHT = 4;
 const LOAD_TIMEOUT_MS = 60000;
 
 const audioPlayer = new Audio();
@@ -67,6 +68,10 @@ function updateButtons() {
   const hasBook = !!book;
   playBtn.disabled = !hasBook || segments.length === 0 || (isPlaying && !isPaused);
   pauseBtn.disabled = !hasBook || !isPlaying || isPaused;
+  if (pauseToggle) {
+    pauseToggle.disabled = !hasBook || segments.length === 0;
+    pauseToggle.textContent = isPlaying && !isPaused ? "Pausar" : "Continuar";
+  }
   prevBtn.disabled = !hasBook || currentChapterIndex <= 0;
   nextBtn.disabled = !hasBook || currentChapterIndex < 0 || currentChapterIndex >= tocItems.length - 1;
 }
@@ -76,7 +81,6 @@ function updateStatus() {
     bookInfo.textContent = "Nenhum livro carregado";
     chapterInfo.textContent = "Capítulo: —";
     progressInfo.textContent = "Progresso: —";
-    currentText.textContent = "—";
     chapterText.textContent = "";
     return;
   }
@@ -91,6 +95,16 @@ function updateStatus() {
     progressInfo.textContent = `Progresso: ${segmentIndex + 1}/${segments.length}`;
   } else {
     progressInfo.textContent = lastTextLength > 0 ? `Texto extraído: ${lastTextLength} caracteres` : "Progresso: —";
+  }
+}
+
+function setLoadingState(isLoading) {
+  isGeneratingAudio = isLoading;
+  if (!ttsLoading) return;
+  if (isLoading) {
+    ttsLoading.classList.remove("hidden");
+  } else {
+    ttsLoading.classList.add("hidden");
   }
 }
 
@@ -478,6 +492,7 @@ function stopPlayback() {
   audioPlayer.removeAttribute("src");
   isPlaying = false;
   isPaused = false;
+  setLoadingState(false);
   updateButtons();
 }
 
@@ -498,14 +513,18 @@ async function fetchTtsAudio(text) {
   if (cached) return cached;
   const inflight = prefetchInFlight.get(segmentIndex);
   if (inflight?.request) {
+    setLoadingState(true);
     try {
       await inflight.request;
+      setLoadingState(false);
       const cachedAfter = audioCache.get(segmentIndex);
       if (cachedAfter) return cachedAfter;
     } catch (error) {
+      setLoadingState(false);
       prefetchInFlight.delete(segmentIndex);
     }
   }
+  setLoadingState(true);
   const response = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -520,6 +539,7 @@ async function fetchTtsAudio(text) {
     signal: controller.signal,
   });
   currentAbortController = null;
+  setLoadingState(false);
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || "Falha ao gerar áudio");
@@ -577,7 +597,7 @@ function prefetchSegment(index) {
 }
 
 function prefetchNextSegments(startIndex) {
-  for (let i = 1; i <= PREFETCH_AHEAD; i += 1) {
+  for (let i = 0; i <= PREFETCH_AHEAD; i += 1) {
     prefetchSegment(startIndex + i);
   }
 }
@@ -593,6 +613,7 @@ async function speakCurrentSegment() {
   if (!segments.length || segmentIndex >= segments.length) {
     isPlaying = false;
     isPaused = false;
+    setLoadingState(false);
     updateButtons();
     return;
   }
@@ -608,6 +629,7 @@ async function speakCurrentSegment() {
     setError(error.message || "Falha ao gerar áudio com o Kokoro.");
     isPlaying = false;
     isPaused = false;
+    setLoadingState(false);
     updateButtons();
     return;
   }
@@ -642,6 +664,7 @@ async function speakCurrentSegment() {
   audioPlayer.onerror = () => {
     isPlaying = false;
     isPaused = false;
+    setLoadingState(false);
     updateButtons();
     setError("Falha ao reproduzir o áudio do Kokoro.");
   };
@@ -652,6 +675,7 @@ async function speakCurrentSegment() {
     setError("Não foi possível reproduzir o áudio.");
     isPlaying = false;
     isPaused = false;
+    setLoadingState(false);
   }
   updateButtons();
 }
@@ -660,30 +684,38 @@ function play() {
   if (!segments.length) return;
   if (isPlaying && isPaused) {
     isPaused = false;
-    audioPlayer.playbackRate = Number(rateRange.value);
-    audioPlayer.play().catch(() => {});
+    if (audioPlayer.src) {
+      audioPlayer.playbackRate = Number(rateRange.value);
+      audioPlayer.play().catch(() => {});
+      updateButtons();
+      return;
+    }
+    playbackSessionId += 1;
+    speakCurrentSegment();
     updateButtons();
     return;
   }
   isPlaying = true;
   isPaused = false;
   playbackSessionId += 1;
+  prefetchNextSegments(segmentIndex);
   speakCurrentSegment();
 }
 
 function pause() {
   if (!isPlaying) return;
   isPaused = true;
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+  }
+  setLoadingState(false);
   audioPlayer.pause();
   updateButtons();
 }
 
 function updateCurrentText() {
-  if (!segments.length || segmentIndex >= segments.length) {
-    currentText.textContent = "—";
-    return;
-  }
-  currentText.textContent = segments[segmentIndex];
+  return;
 }
 
 function updateReadText() {
@@ -691,7 +723,29 @@ function updateReadText() {
     chapterText.textContent = "";
     return;
   }
-  if (isFullBookView) return;
+  if (isFullBookView) {
+    if (lastRenderedSegmentIndex !== segmentIndex) {
+      const previous = chapterText.querySelector(
+        `.segment[data-spine-index="${currentChapterIndex}"][data-seg-index="${lastRenderedSegmentIndex}"]`
+      );
+      if (previous) {
+        previous.classList.remove("reading-now");
+        previous.classList.add("read-text");
+        previous.classList.remove("unread-text");
+      }
+      const currentNode = chapterText.querySelector(
+        `.segment[data-spine-index="${currentChapterIndex}"][data-seg-index="${segmentIndex}"]`
+      );
+      if (currentNode) {
+        currentNode.classList.add("reading-now");
+        currentNode.classList.remove("read-text");
+        currentNode.classList.remove("unread-text");
+        currentNode.scrollIntoView({ block: "center" });
+      }
+      lastRenderedSegmentIndex = segmentIndex;
+    }
+    return;
+  }
   if (!chapterText.querySelector(".segment")) {
     const html = segments
       .map((segment, index) => {
@@ -919,7 +973,9 @@ async function loadChapter(index, resumeSegment = 0) {
 
   lastTextLength = text.length;
   currentChapterText = text;
-  chapterText.textContent = "";
+  if (!isFullBookView) {
+    chapterText.textContent = "";
+  }
 
   segments = segmentText(text);
   segmentIndex = Math.min(resumeSegment, segments.length - 1);
@@ -934,6 +990,7 @@ async function loadChapter(index, resumeSegment = 0) {
   saveState();
   prefetchSegment(segmentIndex);
   prefetchNextSegments(segmentIndex);
+  updateReadText();
 }
 
 function renderToc() {
@@ -1014,7 +1071,9 @@ async function loadSpineChapter(spineIndex, resumeSegment = 0) {
 
   lastTextLength = text.length;
   currentChapterText = text;
-  chapterText.textContent = "";
+  if (!isFullBookView) {
+    chapterText.textContent = "";
+  }
 
   segments = segmentText(text);
   segmentIndex = Math.min(resumeSegment, segments.length - 1);
@@ -1200,10 +1259,7 @@ async function loadBook(file) {
     buildTocLabelMap();
     spineItemsCache = book.spine.spineItems || [];
     fullBookHtml = "";
-    isFullBookView = false;
-    if (fullBookToggle) {
-      fullBookToggle.textContent = "Ver livro inteiro";
-    }
+    isFullBookView = true;
 
     const state = loadState(currentBookId);
     if (!lastServerState) {
@@ -1233,6 +1289,7 @@ async function loadBook(file) {
 
     updateStatus();
     updateButtons();
+    showFullBookView();
   } catch (error) {
     console.error("Erro ao carregar EPUB:", error);
     setError("Falha ao carregar o EPUB. Verifique o console do navegador.");
@@ -1260,9 +1317,8 @@ async function loadBookWithZipFallback(file) {
     renderToc();
     buildTocLabelMap();
     fullBookHtml = "";
-    isFullBookView = false;
+    isFullBookView = true;
     spineItemsCache = isZipBook ? book.spineItems : book.spine.spineItems;
-    if (fullBookToggle) fullBookToggle.textContent = "Ver livro inteiro";
 
   const state = loadState(currentBookId);
   if (state) {
@@ -1285,6 +1341,7 @@ async function loadBookWithZipFallback(file) {
 
   updateStatus();
   updateButtons();
+  showFullBookView();
 }
 
 epubInput.addEventListener("change", (event) => {
@@ -1295,6 +1352,15 @@ epubInput.addEventListener("change", (event) => {
 
 playBtn.addEventListener("click", play);
 pauseBtn.addEventListener("click", pause);
+if (pauseToggle) {
+  pauseToggle.addEventListener("click", () => {
+    if (isPlaying && !isPaused) {
+      pause();
+    } else {
+      play();
+    }
+  });
+}
 prevBtn.addEventListener("click", () => {
   if (currentChapterIndex > 0) {
     loadChapter(currentChapterIndex - 1, 0);
@@ -1377,18 +1443,6 @@ if (tocToggle) {
     section.classList.toggle("collapsed");
     const isCollapsed = section.classList.contains("collapsed");
     tocToggle.textContent = isCollapsed ? "Mostrar" : "Ocultar";
-  });
-}
-
-if (fullBookToggle) {
-  fullBookToggle.addEventListener("click", () => {
-    if (isFullBookView) {
-      showChapterView();
-      fullBookToggle.textContent = "Ver livro inteiro";
-    } else {
-      showFullBookView();
-      fullBookToggle.textContent = "Ver só capítulo";
-    }
   });
 }
 

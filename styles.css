@@ -193,20 +193,23 @@ input[type="text"] {
   gap: 12px;
 }
 
+.text-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.loading {
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  color: #7a6752;
+}
+
 .text-panel h2 {
   margin: 0;
   font-size: 20px;
 }
 
-.current-text {
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: #fff4e3;
-  border: 1px solid #d6b894;
-  font-size: 16px;
-  line-height: 1.6;
-  min-height: 80px;
-}
 
 .chapter-text {
   padding: 14px 16px;
