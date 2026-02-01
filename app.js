@@ -30,6 +30,8 @@ const progressLabel = document.getElementById("progressLabel");
 const miniThumb = document.getElementById("miniThumb");
 const miniCurrent = document.getElementById("miniCurrent");
 const searchMeta = document.getElementById("searchMeta");
+const themeToggle = document.getElementById("themeToggle");
+const fullscreenToggle = document.getElementById("fullscreenToggle");
 let lastTextLength = 0;
 
 let book = null;
@@ -1754,5 +1756,42 @@ if (searchResults) {
       scrollToFullBookSegment(spineIndex, segIndex);
       renderFullBookWindow(chapterText.scrollTop);
     });
+  });
+}
+
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    document.body.classList.toggle("dark");
+    const isDark = document.body.classList.contains("dark");
+    themeToggle.textContent = isDark ? "☀️" : "🌙";
+    localStorage.setItem("audibook_theme", isDark ? "dark" : "light");
+  });
+  const savedTheme = localStorage.getItem("audibook_theme");
+  if (savedTheme === "dark") {
+    document.body.classList.add("dark");
+    themeToggle.textContent = "☀️";
+  }
+}
+
+if (fullscreenToggle) {
+  const updateFsIcon = () => {
+    const isFs = document.fullscreenElement;
+    fullscreenToggle.textContent = isFs ? "⤢" : "⛶";
+  };
+  fullscreenToggle.addEventListener("click", async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+      updateFsIcon();
+    } catch (error) {
+      console.warn("Falha ao alternar tela cheia:", error);
+    }
+  });
+  document.addEventListener("fullscreenchange", () => {
+    document.body.classList.toggle("fullscreen", !!document.fullscreenElement);
+    updateFsIcon();
   });
 }
