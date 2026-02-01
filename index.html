@@ -93,14 +93,12 @@
       <section class="text-panel">
         <div class="text-header">
           <h2>Texto sendo lido</h2>
-          <button id="fullBookToggle" type="button">Ver livro inteiro</button>
+          <div class="text-actions">
+            <span id="ttsLoading" class="loading hidden">Gerando áudio...</span>
+            <button id="pauseToggle" type="button" disabled>Pausar</button>
+          </div>
         </div>
-        <div class="current-text" id="currentText">—</div>
         <div class="chapter-text" id="chapterText"></div>
-        <div class="next-text">
-          <div class="next-label">Próxima parte</div>
-          <div id="nextText">—</div>
-        </div>
       </section>
     </main>
 
