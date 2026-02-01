@@ -98,7 +98,22 @@
             <button id="pauseToggle" type="button" disabled>Pausar</button>
           </div>
         </div>
-        <div class="chapter-text" id="chapterText"></div>
+        <div class="text-toolbar">
+          <div class="search-box">
+            <input id="searchInput" type="search" placeholder="Buscar no livro inteiro" />
+            <button id="searchBtn" type="button">Buscar</button>
+          </div>
+        </div>
+        <div class="search-results" id="searchResults"></div>
+        <div class="search-controls">
+          <span id="progressLabel" class="progress-label">0%</span>
+        </div>
+        <div class="text-body">
+          <div class="mini-map">
+            <div class="mini-thumb" id="miniThumb"></div>
+          </div>
+          <div class="chapter-text" id="chapterText"></div>
+        </div>
       </section>
     </main>
 

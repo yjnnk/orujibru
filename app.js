@@ -23,6 +23,11 @@ const tocToggle = document.getElementById("tocToggle");
 const textPanel = document.querySelector(".text-panel");
 const ttsLoading = document.getElementById("ttsLoading");
 const pauseToggle = document.getElementById("pauseToggle");
+const searchInput = document.getElementById("searchInput");
+const searchBtn = document.getElementById("searchBtn");
+const searchResults = document.getElementById("searchResults");
+const progressLabel = document.getElementById("progressLabel");
+const miniThumb = document.getElementById("miniThumb");
 let lastTextLength = 0;
 
 let book = null;
@@ -54,6 +59,13 @@ let isZipBook = false;
 let lastRenderedSegmentIndex = -1;
 let spineItemsCache = [];
 let isGeneratingAudio = false;
+let fullBookSegments = [];
+let fullBookOffsets = [];
+let fullBookHeights = [];
+let fullBookTotalHeight = 0;
+let fullBookRenderedRange = { start: -1, end: -1 };
+let fullBookIndexMap = new Map();
+let searchTimer = null;
 
 const MAX_SEGMENT_LENGTH = 1000;
 const DEFAULT_LANG = "en-gb";
@@ -61,6 +73,10 @@ const DEFAULT_VOICE = "am_michael";
 const PREFETCH_AHEAD = 6;
 const MAX_PREFETCH_INFLIGHT = 4;
 const LOAD_TIMEOUT_MS = 60000;
+const AVG_CHARS_PER_LINE = 90;
+const LINE_HEIGHT_PX = 26;
+const SEGMENT_MARGIN_PX = 10;
+const VIRTUAL_WINDOW_SIZE = 120;
 
 const audioPlayer = new Audio();
 
@@ -106,6 +122,147 @@ function setLoadingState(isLoading) {
   } else {
     ttsLoading.classList.add("hidden");
   }
+}
+
+function estimateSegmentHeight(text) {
+  const lines = Math.max(1, Math.ceil(text.length / AVG_CHARS_PER_LINE));
+  return lines * LINE_HEIGHT_PX + SEGMENT_MARGIN_PX;
+}
+
+function buildFullBookIndex() {
+  fullBookOffsets = [];
+  fullBookHeights = [];
+  fullBookTotalHeight = 0;
+  fullBookIndexMap = new Map();
+
+  fullBookSegments.forEach((item, idx) => {
+    const height =
+      item.type === "header"
+        ? LINE_HEIGHT_PX * 1.6 + SEGMENT_MARGIN_PX
+        : estimateSegmentHeight(item.text);
+    fullBookOffsets[idx] = fullBookTotalHeight;
+    fullBookHeights[idx] = height;
+    fullBookTotalHeight += height;
+    if (item.type === "segment") {
+      fullBookIndexMap.set(`${item.spineIndex}:${item.segIndex}`, idx);
+    }
+  });
+}
+
+function findSegmentIndexByOffset(offset) {
+  let low = 0;
+  let high = fullBookOffsets.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const start = fullBookOffsets[mid];
+    const end = start + fullBookHeights[mid];
+    if (offset < start) {
+      high = mid - 1;
+    } else if (offset > end) {
+      low = mid + 1;
+    } else {
+      return mid;
+    }
+  }
+  return Math.max(0, Math.min(fullBookOffsets.length - 1, low));
+}
+
+function renderFullBookWindow(scrollTop = 0) {
+  if (!chapterText || !fullBookSegments.length) return;
+  const viewHeight = chapterText.clientHeight || 600;
+  const center = scrollTop + viewHeight / 2;
+  const centerIndex = findSegmentIndexByOffset(center);
+  const start = Math.max(0, centerIndex - Math.floor(VIRTUAL_WINDOW_SIZE / 2));
+  const end = Math.min(fullBookSegments.length - 1, start + VIRTUAL_WINDOW_SIZE);
+
+  if (fullBookRenderedRange.start === start && fullBookRenderedRange.end === end) return;
+  fullBookRenderedRange = { start, end };
+
+  const topHeight = fullBookOffsets[start] || 0;
+  const bottomHeight = Math.max(
+    0,
+    fullBookTotalHeight - (fullBookOffsets[end] + fullBookHeights[end])
+  );
+
+  const itemsHtml = fullBookSegments.slice(start, end + 1).map((item) => {
+    if (item.type === "header") {
+      return `<h3 class="book-section-title">${escapeHtml(item.text)}</h3>`;
+    }
+    let cls = "segment unread-text";
+    if (item.spineIndex === currentChapterIndex) {
+      if (item.segIndex < segmentIndex) cls = "segment read-text";
+      if (item.segIndex === segmentIndex) cls = "segment reading-now";
+    }
+    return `<p class="${cls}" data-spine-index="${item.spineIndex}" data-seg-index="${item.segIndex}">${escapeHtml(item.text)}</p>`;
+  });
+
+  chapterText.innerHTML =
+    `<div class="virtual-spacer" style="height:${topHeight}px"></div>` +
+    itemsHtml.join("") +
+    `<div class="virtual-spacer" style="height:${bottomHeight}px"></div>`;
+}
+
+function scrollToFullBookSegment(spineIndex, segIndex) {
+  const key = `${spineIndex}:${segIndex}`;
+  const idx = fullBookIndexMap.get(key);
+  if (idx == null) return;
+  const offset = fullBookOffsets[idx] || 0;
+  chapterText.scrollTop = Math.max(0, offset - 40);
+  renderFullBookWindow(chapterText.scrollTop);
+}
+
+function updateMiniMap() {
+  if (!miniThumb || !chapterText || !fullBookTotalHeight) return;
+  const viewHeight = chapterText.clientHeight || 1;
+  const maxScroll = Math.max(1, fullBookTotalHeight - viewHeight);
+  const progress = Math.min(1, Math.max(0, chapterText.scrollTop / maxScroll));
+  const thumbHeight = Math.max(20, viewHeight / fullBookTotalHeight * viewHeight);
+  miniThumb.style.height = `${thumbHeight}px`;
+  miniThumb.style.top = `${progress * (viewHeight - thumbHeight)}px`;
+  if (progressLabel) {
+    progressLabel.textContent = `${Math.round(progress * 100)}%`;
+  }
+}
+
+function renderSearchResults(results) {
+  if (!searchResults) return;
+  if (!results.length) {
+    searchResults.innerHTML = "";
+    return;
+  }
+  const items = results
+    .map(
+      (r) =>
+        `<div class="result-item"><button data-spine-index="${r.spineIndex}" data-seg-index="${r.segIndex}">${escapeHtml(
+          r.preview
+        )}</button></div>`
+    )
+    .join("");
+  searchResults.innerHTML = items;
+}
+
+function runSearch(query) {
+  if (!query) {
+    renderSearchResults([]);
+    return;
+  }
+  const q = query.toLowerCase();
+  const results = [];
+  for (const item of fullBookSegments) {
+    if (item.type !== "segment") continue;
+    const text = item.text;
+    const idx = text.toLowerCase().indexOf(q);
+    if (idx === -1) continue;
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(text.length, idx + 120);
+    results.push({
+      spineIndex: item.spineIndex,
+      segIndex: item.segIndex,
+      preview: text.slice(start, end),
+    });
+    if (results.length >= 50) break;
+  }
+  renderSearchResults(results);
 }
 
 function setError(message) {
@@ -741,6 +898,21 @@ function updateReadText() {
         currentNode.classList.remove("read-text");
         currentNode.classList.remove("unread-text");
         currentNode.scrollIntoView({ block: "center" });
+      } else {
+        const key = `${currentChapterIndex}:${segmentIndex}`;
+        if (fullBookIndexMap.has(key)) {
+          scrollToFullBookSegment(currentChapterIndex, segmentIndex);
+        }
+        renderFullBookWindow(chapterText.scrollTop);
+        const refreshed = chapterText.querySelector(
+          `.segment[data-spine-index="${currentChapterIndex}"][data-seg-index="${segmentIndex}"]`
+        );
+        if (refreshed) {
+          refreshed.classList.add("reading-now");
+          refreshed.classList.remove("read-text");
+          refreshed.classList.remove("unread-text");
+        }
+        updateMiniMap();
       }
       lastRenderedSegmentIndex = segmentIndex;
     }
@@ -1088,19 +1260,20 @@ async function loadSpineChapter(spineIndex, resumeSegment = 0) {
   saveState();
   prefetchSegment(segmentIndex);
   prefetchNextSegments(segmentIndex);
+  scrollToFullBookSegment(spineIndex, segmentIndex);
 }
 
 async function loadFullBookHtml() {
   if (!book) return "";
   if (fullBookHtml || fullBookLoading) return fullBookHtml;
   fullBookLoading = true;
-  const parts = [];
   const spineItems = spineItemsCache.length
     ? spineItemsCache
     : isZipBook
       ? book.spineItems
       : book.spine.spineItems;
   spineItemsCache = spineItems;
+  const segments = [];
   for (let i = 0; i < spineItems.length; i += 1) {
     const section = spineItems[i];
     let text = "";
@@ -1118,18 +1291,23 @@ async function loadFullBookHtml() {
       text = "";
     }
     if (!text) continue;
-    const label = escapeHtml(getSectionLabel(section, i));
-    parts.push(`<h3 class="book-section-title">${label}</h3>`);
+    segments.push({
+      type: "header",
+      text: getSectionLabel(section, i),
+    });
     const segs = segmentText(text);
-    const paragraphs = segs
-      .map(
-        (part, segIndex) =>
-          `<p class="book-paragraph segment unread-text" data-spine-index="${i}" data-seg-index="${segIndex}">${escapeHtml(part)}</p>`
-      )
-      .join("");
-    parts.push(paragraphs);
+    segs.forEach((part, segIndex) => {
+      segments.push({
+        type: "segment",
+        spineIndex: i,
+        segIndex,
+        text: part,
+      });
+    });
   }
-  fullBookHtml = parts.join("");
+  fullBookSegments = segments;
+  buildFullBookIndex();
+  fullBookHtml = "ready";
   fullBookLoading = false;
   return fullBookHtml;
 }
@@ -1139,12 +1317,13 @@ async function showFullBookView() {
   isFullBookView = true;
   if (textPanel) textPanel.classList.add("full-book");
   chapterText.innerHTML = "<p class=\"book-paragraph\">Carregando livro inteiro...</p>";
-  const html = await loadFullBookHtml();
-  if (!html) {
+  const ok = await loadFullBookHtml();
+  if (!ok) {
     chapterText.innerHTML = "<p class=\"book-paragraph\">Não foi possível carregar o livro inteiro.</p>";
     return;
   }
-  chapterText.innerHTML = html;
+  renderFullBookWindow(0);
+  updateMiniMap();
 }
 
 function showChapterView() {
@@ -1447,6 +1626,11 @@ if (tocToggle) {
 }
 
 if (chapterText) {
+  chapterText.addEventListener("scroll", () => {
+    if (!isFullBookView) return;
+    renderFullBookWindow(chapterText.scrollTop);
+    updateMiniMap();
+  });
   chapterText.addEventListener("click", (event) => {
     const target = event.target.closest("[data-seg-index]");
     if (!target) return;
@@ -1461,5 +1645,34 @@ if (chapterText) {
       return;
     }
     setSegment(index, true);
+  });
+}
+
+if (searchInput) {
+  searchInput.addEventListener("input", (event) => {
+    const value = event.target.value.trim();
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => runSearch(value), 300);
+  });
+}
+
+if (searchBtn) {
+  searchBtn.addEventListener("click", () => {
+    const value = searchInput ? searchInput.value.trim() : "";
+    runSearch(value);
+  });
+}
+
+if (searchResults) {
+  searchResults.addEventListener("click", (event) => {
+    const target = event.target.closest("button[data-spine-index]");
+    if (!target) return;
+    const spineIndex = Number(target.dataset.spineIndex);
+    const segIndex = Number(target.dataset.segIndex);
+    if (Number.isNaN(spineIndex) || Number.isNaN(segIndex)) return;
+    loadSpineChapter(spineIndex, segIndex).then(() => {
+      play();
+      scrollToFullBookSegment(spineIndex, segIndex);
+    });
   });
 }
