@@ -223,7 +223,9 @@ button {
 #tocList li button {
   width: 100%;
   text-align: left;
-  background: #fffaf3;
+  background: var(--chip);
+  border: 1px solid var(--chip-border);
+  color: var(--text);
 }
 
 .text-panel {
