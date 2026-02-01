@@ -253,6 +253,12 @@ input[type="text"] {
   margin-top: 6px;
 }
 
+.search-meta {
+  font-size: 12px;
+  color: #8b7a65;
+  margin-top: 6px;
+}
+
 .progress-label {
   font-size: 12px;
   color: #8b7a65;
@@ -269,6 +275,14 @@ input[type="text"] {
   position: relative;
   background: #efe6d8;
   border-radius: 999px;
+}
+
+.mini-current {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #8d6e4a;
 }
 
 .mini-thumb {
@@ -313,6 +327,7 @@ input[type="text"] {
   background: #fff4e3;
   border-radius: 6px;
   padding: 2px 4px;
+  border-left: 4px solid #c9b08f;
 }
 
 .segment {
@@ -332,6 +347,9 @@ input[type="text"] {
   margin: 18px 0 8px;
   font-size: 18px;
   color: #3d352c;
+  background: #f3eadc;
+  border-left: 4px solid #c9b08f;
+  padding: 6px 10px;
 }
 
 .book-paragraph {
@@ -340,6 +358,12 @@ input[type="text"] {
 
 .virtual-spacer {
   width: 100%;
+}
+
+.search-highlight {
+  background: #fff1cf;
+  border-radius: 4px;
+  padding: 0 2px;
 }
 
 .text-panel.full-book .chapter-text {
