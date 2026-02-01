@@ -199,6 +199,87 @@ input[type="text"] {
   gap: 12px;
 }
 
+.text-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.search-box {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  min-width: 240px;
+}
+
+.search-box input[type="search"] {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid #bda98e;
+  background: #fffaf3;
+}
+
+.search-results,
+.search-controls {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.result-item {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #e2d6c7;
+  background: #fffaf3;
+  font-size: 14px;
+}
+
+.result-item button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.search-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.progress-label {
+  font-size: 12px;
+  color: #8b7a65;
+}
+
+.text-body {
+  display: grid;
+  grid-template-columns: 10px 1fr;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.mini-map {
+  position: relative;
+  background: #efe6d8;
+  border-radius: 999px;
+}
+
+.mini-thumb {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  height: 20px;
+  border-radius: 999px;
+  background: #c9b08f;
+}
+
 .loading {
   font-size: 12px;
   letter-spacing: 0.2px;
@@ -255,6 +336,10 @@ input[type="text"] {
 
 .book-paragraph {
   margin: 0 0 10px;
+}
+
+.virtual-spacer {
+  width: 100%;
 }
 
 .text-panel.full-book .chapter-text {
