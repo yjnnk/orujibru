@@ -1,4 +1,4 @@
-const epubInput = document.getElementById("epubInput");
+const fileInput = document.getElementById("fileInput");
 const tocList = document.getElementById("tocList");
 const playBtn = document.getElementById("playBtn");
 const pauseBtn = document.getElementById("pauseBtn");
@@ -32,6 +32,8 @@ const miniCurrent = document.getElementById("miniCurrent");
 const searchMeta = document.getElementById("searchMeta");
 const themeToggle = document.getElementById("themeToggle");
 const fullscreenToggle = document.getElementById("fullscreenToggle");
+const pdfViewer = document.getElementById("pdf-viewer");
+const pdfCanvas = document.getElementById("pdf-canvas");
 let lastTextLength = 0;
 
 let book = null;
@@ -105,7 +107,7 @@ function updateStatus() {
     return;
   }
 
-  bookInfo.textContent = `Livro: ${book?.title || "EPUB"}`;
+  bookInfo.textContent = `Livro: ${book?.title || "Livro"}`;
   if (currentChapterIndex >= 0 && tocItems[currentChapterIndex]) {
     chapterInfo.textContent = `Capítulo: ${tocItems[currentChapterIndex].label}`;
   } else {
@@ -318,7 +320,7 @@ function saveState() {
   if (!currentBookId) return;
   const state = {
     bookId: currentBookId,
-    bookTitle: book?.title || "EPUB",
+    bookTitle: book?.title || "Livro",
     chapterIndex: currentChapterIndex,
     segmentIndex,
     lastReadIndex: Math.max(0, segmentIndex - 1),
@@ -1442,6 +1444,8 @@ async function loadBook(file) {
     currentBookId = getBookId(file);
     bookInfo.textContent = "Carregando livro...";
     isZipBook = false;
+    pdfViewer.classList.add("hidden");
+    chapterText.classList.remove("hidden");
 
     // Prefer JSZip fallback first; it's more reliable for messy EPUBs.
     try {
@@ -1556,6 +1560,77 @@ async function loadBook(file) {
   }
 }
 
+async function loadPdf(file) {
+  stopPlayback();
+  setError("");
+  book = null;
+  tocItems = [];
+  segments = [];
+  segmentIndex = 0;
+  currentChapterIndex = -1;
+  pdfViewer.classList.remove("hidden");
+  chapterText.classList.add("hidden");
+  bookInfo.textContent = "Carregando PDF...";
+  try {
+    currentBookId = getBookId(file);
+    const fileReader = new FileReader();
+    fileReader.onload = async function() {
+      const typedarray = new Uint8Array(this.result);
+      const pdf = await pdfjsLib.getDocument(typedarray).promise;
+      let fullText = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        fullText += textContent.items.map(item => item.str).join(" ");
+      }
+      book = { title: file.name };
+      tocItems = [{ label: file.name, href: "#" }];
+      await loadPdfChapter(fullText);
+    };
+    fileReader.readAsArrayBuffer(file);
+  } catch (error) {
+    console.error("Error loading PDF:", error);
+    setError("Falha ao carregar o PDF.");
+    updateStatus();
+    updateButtons();
+  }
+}
+
+async function loadPdfChapter(text) {
+  stopPlayback();
+  setError("");
+  lastTextLength = text.length;
+  currentChapterText = text;
+  chapterText.textContent = "";
+
+  segments = segmentText(text);
+  segmentIndex = 0;
+  lastRenderedSegmentIndex = -1;
+
+  currentChapterIndex = 0;
+  updateCurrentText();
+  updateReadText();
+  updateStatus();
+  updateButtons();
+  saveState();
+  prefetchSegment(segmentIndex);
+  prefetchNextSegments(segmentIndex);
+  updateReadText();
+
+  // For PDF, we just show the extracted text directly
+  isFullBookView = false;
+  chapterText.classList.remove("hidden");
+  pdfViewer.classList.add("hidden");
+  const html = segments
+    .map((segment, index) => {
+      const safeText = escapeHtml(segment);
+      return `<p class="segment unread-text" data-seg-index="${index}">${safeText}</p>`;
+    })
+    .join("");
+  chapterText.innerHTML = html;
+  updateReadText();
+}
+
 async function loadBookWithZipFallback(file) {
   const buffer = await file.arrayBuffer();
   const result = await withTimeout(loadZipEpub(buffer), LOAD_TIMEOUT_MS, "EPUB (JSZip)");
@@ -1603,10 +1678,15 @@ async function loadBookWithZipFallback(file) {
   showFullBookView();
 }
 
-epubInput.addEventListener("change", (event) => {
+fileInput.addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
-  loadBook(file);
+
+  if (file.name.toLowerCase().endsWith(".pdf")) {
+    loadPdf(file);
+  } else {
+    loadBook(file);
+  }
 });
 
 playBtn.addEventListener("click", play);
