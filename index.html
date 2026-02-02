@@ -3,20 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>EPUB Audiobook Reader</title>
+    <title>EPUB & PDF Audiobook Reader</title>
     <link rel="stylesheet" href="styles.css" />
+    <style>
+      #pdf-viewer {
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+      }
+      #pdf-viewer.hidden {
+        display: none;
+      }
+    </style>
   </head>
   <body>
     <main class="app">
       <header class="app-header">
         <div>
-          <h1>EPUB Audiobook Reader</h1>
+          <h1>EPUB & PDF Audiobook Reader</h1>
           <p class="subtitle">Leitor offline com narração no Chrome</p>
         </div>
         <div class="header-actions">
           <label class="file-picker">
-            <input id="epubInput" type="file" accept=".epub" />
-            <span>Carregar EPUB</span>
+            <input id="fileInput" type="file" accept=".epub,.pdf" />
+            <span>Carregar EPUB ou PDF</span>
           </label>
           <button id="themeToggle" type="button" aria-label="Alternar dark mode">🌙</button>
         </div>
@@ -119,12 +129,19 @@
             <div class="mini-current" id="miniCurrent"></div>
           </div>
           <div class="chapter-text" id="chapterText"></div>
+          <div id="pdf-viewer" class="hidden">
+            <canvas id="pdf-canvas"></canvas>
+          </div>
         </div>
       </section>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.88/dist/epub.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <script>
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+    </script>
     <script src="app.js"></script>
   </body>
 </html>
