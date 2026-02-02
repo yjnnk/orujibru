@@ -300,10 +300,11 @@ function runSearch(query) {
       spineIndex: item.spineIndex,
       segIndex: item.segIndex,
       preview: text.slice(start, end),
+      query,
     });
     if (results.length >= 50) break;
   }
-  renderSearchResults(results.map((r) => ({ ...r, query })));
+  renderSearchResults(results);
 }
 
 function setError(message) {
@@ -1617,17 +1618,33 @@ async function loadPdfChapter(text) {
   prefetchNextSegments(segmentIndex);
   updateReadText();
 
+  // Create fullBookSegments for PDF to enable search
+  fullBookSegments = [];
+  if (book) {
+    fullBookSegments.push({
+      type: "header",
+      text: book.title,
+    });
+  }
+  segments.forEach((part, segIndex) => {
+    fullBookSegments.push({
+      type: "segment",
+      spineIndex: 0,
+      segIndex,
+      text: part,
+    });
+  });
+  buildFullBookIndex();
+  
   // For PDF, we just show the extracted text directly
-  isFullBookView = false;
+  isFullBookView = true;
+  if (textPanel) textPanel.classList.add("full-book");
   chapterText.classList.remove("hidden");
   pdfViewer.classList.add("hidden");
-  const html = segments
-    .map((segment, index) => {
-      const safeText = escapeHtml(segment);
-      return `<p class="segment unread-text" data-seg-index="${index}">${safeText}</p>`;
-    })
-    .join("");
-  chapterText.innerHTML = html;
+  
+  fullBookRenderedRange = { start: -1, end: -1 };
+  renderFullBookWindow(0);
+  updateMiniMap();
   updateReadText();
 }
 
