@@ -32,6 +32,11 @@ const miniCurrent = document.getElementById("miniCurrent");
 const searchMeta = document.getElementById("searchMeta");
 const themeToggle = document.getElementById("themeToggle");
 const fullscreenToggle = document.getElementById("fullscreenToggle");
+const Core = window.EpubCore;
+if (!Core) {
+  throw new Error("core.js não foi carregado.");
+}
+const { escapeRegExp, inferLangFromVoice, resolvePath, segmentText, useSpineForClick } = Core;
 const pdfViewer = document.getElementById("pdf-viewer");
 const pdfCanvas = document.getElementById("pdf-canvas");
 let lastTextLength = 0;
@@ -72,6 +77,7 @@ let fullBookTotalHeight = 0;
 let fullBookRenderedRange = { start: -1, end: -1 };
 let fullBookIndexMap = new Map();
 let searchTimer = null;
+let isPdf = false;
 
 const MAX_SEGMENT_LENGTH = 1000;
 const DEFAULT_LANG = "en-gb";
@@ -368,24 +374,6 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-function resolvePath(base, relative) {
-  if (!relative) return "";
-  if (relative.startsWith("/")) return relative.replace(/^\//, "");
-  const baseParts = base ? base.split("/") : [];
-  baseParts.pop();
-  const relParts = relative.split("/");
-  const out = [...baseParts];
-  relParts.forEach((part) => {
-    if (!part || part === ".") return;
-    if (part === "..") {
-      out.pop();
-      return;
-    }
-    out.push(part);
-  });
-  return out.join("/");
-}
-
 function findZipFilePath(zip, matcher) {
   const keys = Object.keys(zip.files || {});
   return keys.find(matcher) || "";
@@ -588,23 +576,6 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function inferLangFromVoice(voice) {
-  if (!voice) return "";
-  const v = voice.toLowerCase();
-  if (v.includes("pt") || v.includes("br") || v.includes("pm")) return "pt-br";
-  if (v.includes("gb") || v.includes("uk")) return "en-gb";
-  if (v.includes("en") || v.startsWith("am_")) return "en-us";
-  if (v.includes("es")) return "es-es";
-  if (v.includes("fr")) return "fr-fr";
-  if (v.includes("de")) return "de-de";
-  if (v.includes("it")) return "it-it";
-  return "";
 }
 
 function applyLangFromVoice(voice) {
@@ -1025,42 +996,6 @@ function updateReadText() {
   }
 }
 
-function splitSentences(text) {
-  const matches = text.match(/[^.!?]+[.!?]+\s*/g);
-  if (!matches) return [text];
-  const tail = text.replace(matches.join(""), "").trim();
-  if (tail) matches.push(tail);
-  return matches.map((part) => part.trim()).filter(Boolean);
-}
-
-function segmentText(text) {
-  const rawSegments = text
-    .split(/\n{2,}/)
-    .map((seg) => seg.trim())
-    .filter(Boolean);
-
-  const results = [];
-  rawSegments.forEach((seg) => {
-    if (seg.length <= MAX_SEGMENT_LENGTH) {
-      results.push(seg);
-      return;
-    }
-    const sentences = splitSentences(seg);
-    let current = "";
-    sentences.forEach((sentence) => {
-      if ((current + " " + sentence).trim().length > MAX_SEGMENT_LENGTH) {
-        if (current) results.push(current.trim());
-        current = sentence;
-      } else {
-        current = `${current} ${sentence}`.trim();
-      }
-    });
-    if (current) results.push(current.trim());
-  });
-
-  return results;
-}
-
 function extractTextFromDocument(doc) {
   if (!doc) return "";
   let parsedDoc = doc;
@@ -1228,7 +1163,7 @@ async function loadChapter(index, resumeSegment = 0) {
     chapterText.textContent = "";
   }
 
-  segments = segmentText(text);
+  segments = segmentText(text, MAX_SEGMENT_LENGTH);
   segmentIndex = Math.min(resumeSegment, segments.length - 1);
   if (segmentIndex < 0) segmentIndex = 0;
   lastRenderedSegmentIndex = -1;
@@ -1327,7 +1262,7 @@ async function loadSpineChapter(spineIndex, resumeSegment = 0) {
     chapterText.textContent = "";
   }
 
-  segments = segmentText(text);
+  segments = segmentText(text, MAX_SEGMENT_LENGTH);
   segmentIndex = Math.min(resumeSegment, segments.length - 1);
   if (segmentIndex < 0) segmentIndex = 0;
   lastRenderedSegmentIndex = -1;
@@ -1375,7 +1310,7 @@ async function loadFullBookHtml() {
       type: "header",
       text: getSectionLabel(section, i),
     });
-    const segs = segmentText(text);
+    const segs = segmentText(text, MAX_SEGMENT_LENGTH);
     segs.forEach((part, segIndex) => {
       segments.push({
         type: "segment",
@@ -1440,6 +1375,7 @@ async function loadBook(file) {
   stopPlayback();
   setError("");
   try {
+    isPdf = false;
     loadToken += 1;
     const token = loadToken;
     currentBookId = getBookId(file);
@@ -1569,6 +1505,7 @@ async function loadPdf(file) {
   segments = [];
   segmentIndex = 0;
   currentChapterIndex = -1;
+  isPdf = true;
   pdfViewer.classList.remove("hidden");
   chapterText.classList.add("hidden");
   bookInfo.textContent = "Carregando PDF...";
@@ -1604,7 +1541,7 @@ async function loadPdfChapter(text) {
   currentChapterText = text;
   chapterText.textContent = "";
 
-  segments = segmentText(text);
+  segments = segmentText(text, MAX_SEGMENT_LENGTH);
   segmentIndex = 0;
   lastRenderedSegmentIndex = -1;
 
@@ -1653,6 +1590,7 @@ async function loadBookWithZipFallback(file) {
   const result = await withTimeout(loadZipEpub(buffer), LOAD_TIMEOUT_MS, "EPUB (JSZip)");
   book = result.zipBook;
   isZipBook = true;
+  isPdf = false;
   book.title = result.title || "EPUB";
   tocItems = result.tocItems || [];
 
@@ -1814,7 +1752,7 @@ if (chapterText) {
     if (!target) return;
     const index = Number(target.dataset.segIndex);
     if (Number.isNaN(index)) return;
-    if (isFullBookView) {
+    if (useSpineForClick(isFullBookView, isPdf)) {
       const spineIndex = Number(target.dataset.spineIndex);
       if (Number.isNaN(spineIndex)) return;
       loadSpineChapter(spineIndex, index).then(() => {
@@ -1848,11 +1786,17 @@ if (searchResults) {
     const spineIndex = Number(target.dataset.spineIndex);
     const segIndex = Number(target.dataset.segIndex);
     if (Number.isNaN(spineIndex) || Number.isNaN(segIndex)) return;
-    loadSpineChapter(spineIndex, segIndex).then(() => {
-      play();
+    if (useSpineForClick(isFullBookView, isPdf)) {
+      loadSpineChapter(spineIndex, segIndex).then(() => {
+        play();
+        scrollToFullBookSegment(spineIndex, segIndex);
+        renderFullBookWindow(chapterText.scrollTop);
+      });
+    } else {
+      setSegment(segIndex, true);
       scrollToFullBookSegment(spineIndex, segIndex);
       renderFullBookWindow(chapterText.scrollTop);
-    });
+    }
   });
 }
 
